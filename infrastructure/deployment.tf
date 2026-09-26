@@ -1,11 +1,11 @@
-data "cloudflare_account_api_token_permission_groups" "deployment" {
+data "cloudflare_account_api_token_permission_groups_list" "deployment" {
   account_id = local.cloudflare_account_id
   scope      = "com.cloudflare.api.account"
 }
 
 locals {
   deployment_permission_group_ids = {
-    for group in data.cloudflare_account_api_token_permission_groups.deployment.permission_groups :
+    for group in data.cloudflare_account_api_token_permission_groups_list.deployment.result :
     group.name => group.id
   }
 }
@@ -20,9 +20,9 @@ resource "cloudflare_account_token" "wrangler_deploy" {
       { id = local.deployment_permission_group_ids["Account Settings Read"] },
       { id = local.deployment_permission_group_ids["Workers Scripts Write"] },
     ]
-    resources = {
+    resources = jsonencode({
       "com.cloudflare.api.account.${local.cloudflare_account_id}" = "*"
-    }
+    })
   }]
 }
 
