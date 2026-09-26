@@ -1,6 +1,15 @@
 compatibility_date = "2026-09-26"
 main = "build/index.js"
-name = "godoshi"
+name = "godoshi-worker"
 
 [build]
 command = "worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "godoshi-db"
+database_id = "345390c6-a0fb-4b9c-b8ca-9e862dfdf196"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "godoshi-runtime-bucket"

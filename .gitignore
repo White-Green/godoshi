@@ -1,6 +1,7 @@
 /*
 !/.github
 !/infrastructure
+!/migrations
 !/src
 !/.gitignore
 !/Cargo.lock
