@@ -6,11 +6,3 @@ terraform {
     }
   }
 }
-
-provider "cloudflare" {
-  api_token = var.cloudflare_api_token
-}
-
-locals {
-  account_id = var.cloudflare_account_id
-}
