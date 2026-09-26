@@ -15,3 +15,8 @@ resource "cloudflare_r2_bucket" "runtime_bucket" {
   account_id = local.cloudflare_account_id
   name       = "godoshi-runtime-bucket"
 }
+
+resource "cloudflare_queue" "job_queue" {
+  account_id = local.cloudflare_account_id
+  queue_name = "godoshi-job-queue"
+}
