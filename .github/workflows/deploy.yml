@@ -1,0 +1,96 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  deploy:
+    name: Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    needs: ci
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch Cargo dependencies
+        shell: bash
+        run: cargo fetch
+
+      - name: Cache Rust target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ runner.os }}-production-target-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+
+#      - name: Resolve worker-build version
+#        id: worker-build-version
+#        shell: bash
+#        run: |
+#          VER=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[0].metadata["cargo-binaries"]["worker-build"]')
+#          echo "version=$VER" >> "$GITHUB_OUTPUT"
+#          echo "worker-build ${VER}"
+#
+#      - name: Cache worker-build
+#        id: cache-worker-build
+#        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+#        with:
+#          path: |
+#            ~/.cargo/bin/worker-build
+#          key: ${{ runner.os }}-worker-build-${{ steps.worker-build-version.outputs.version }}
+#
+#      - name: Install worker-build
+#        if: steps.cache-worker-build.outputs.cache-hit != 'true'
+#        shell: bash
+#        run: cargo install worker-build --version "$WORKER_BUILD_VERSION" --locked
+#        env:
+#          WORKER_BUILD_VERSION: ${{ steps.worker-build-version.outputs.version }}
+
+      - name: Install worker-build
+        run: cargo install worker-build --git https://github.com/White-Green/workers-rs --branch codegen --locked
+
+      - name: Deploy Worker
+        run: pnpm exec wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

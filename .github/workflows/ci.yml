@@ -1,0 +1,281 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  github-actions-lint:
+    name: GitHub Actions Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: v1.7.12
+      GHALINT_VERSION: v1.5.6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          cache: false
+
+      - name: Install actionlint
+        run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+
+      - name: Install ghalint
+        run: go install "github.com/suzuki-shunsuke/ghalint/cmd/ghalint@${GHALINT_VERSION}"
+
+      - name: Run actionlint
+        run: actionlint -color
+
+      - name: Run zizmor
+        if: ${{ !cancelled() }}
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          version: 1.25.2
+
+      - name: Run ghalint
+        if: ${{ !cancelled() }}
+        run: ghalint run
+        env:
+          GHALINT_LOG_COLOR: always
+          GITHUB_TOKEN: ${{ github.token }}
+
+  rust-format:
+    name: Rust Format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Fetch Cargo dependencies
+        run: cargo fetch
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+  toml-format:
+    name: TOML Format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+
+      - name: Resolve taplo-cli version
+        id: taplo-version
+        run: |
+          VER=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[0].metadata["cargo-binaries"]["taplo-cli"]')
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "taplo-cli ${VER}"
+
+      - name: Cache taplo
+        id: cache-taplo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/taplo
+          key: ${{ runner.os }}-taplo-${{ steps.taplo-version.outputs.version }}
+
+      - name: Install taplo
+        if: steps.cache-taplo.outputs.cache-hit != 'true'
+        run: cargo install taplo-cli --version "$TAPLO_CLI_VERSION" --locked
+        env:
+          TAPLO_CLI_VERSION: ${{ steps.taplo-version.outputs.version }}
+
+      - name: Check TOML formatting
+        run: taplo fmt --check
+
+  rust-lint:
+    name: Rust Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
+
+      - name: Fetch Cargo dependencies
+        run: cargo fetch
+
+      - name: Cache Rust target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ github.job }}-target-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-{1}-target-{2}-', runner.os, github.job, steps.rust-toolchain.outputs.cachekey) || '' }}
+
+      - name: Lint Rust
+        run: cargo clippy --all-targets --tests -- -D warnings
+
+  rust-test:
+    name: Rust Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
+
+      - name: Fetch Cargo dependencies
+        run: cargo fetch
+
+      - name: Cache Rust target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ github.job }}-target-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-{1}-target-{2}-', runner.os, github.job, steps.rust-toolchain.outputs.cachekey) || '' }}
+
+      - name: Test Rust
+        run: cargo test
+        env:
+          PROPTEST_CASES: 4096
+
+  worker-build:
+    name: Worker Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
+
+      - name: Fetch Cargo dependencies
+        run: cargo fetch
+
+      - name: Cache Rust target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ runner.os }}-production-target-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-production-target-{1}-', runner.os, steps.rust-toolchain.outputs.cachekey) || '' }}
+
+      - name: Build Rust for Workers target
+        run: cargo build --target wasm32-unknown-unknown
+
+#      - name: Resolve worker-build version
+#        id: worker-build-version
+#        run: |
+#          VER=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[0].metadata["cargo-binaries"]["worker-build"]')
+#          echo "version=$VER" >> "$GITHUB_OUTPUT"
+#          echo "worker-build ${VER}"
+#
+#      - name: Cache worker-build
+#        id: cache-worker-build
+#        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+#        with:
+#          path: |
+#            ~/.cargo/bin/worker-build
+#          key: ${{ runner.os }}-worker-build-${{ steps.worker-build-version.outputs.version }}
+#
+#      - name: Install worker-build
+#        if: steps.cache-worker-build.outputs.cache-hit != 'true'
+#        run: cargo install worker-build --version "$WORKER_BUILD_VERSION" --locked
+#        env:
+#          WORKER_BUILD_VERSION: ${{ steps.worker-build-version.outputs.version }}
+
+      - name: Install worker-build
+        run: cargo install worker-build --git https://github.com/White-Green/workers-rs --branch codegen --locked
+
+      - name: Build Worker
+        run: worker-build --release
