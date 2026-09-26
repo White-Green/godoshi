@@ -1,14 +1,22 @@
 [package]
+authors = ["White-Green <43771790+White-Green@users.noreply.github.com>"]
+edition = "2021"
 name = "godoshi"
 version = "0.1.0"
-edition = "2021"
-authors = ["White-Green <43771790+White-Green@users.noreply.github.com>"]
 
 [lib]
 crate-type = ["cdylib"]
 
+[package.metadata.cargo-binaries]
+taplo-cli = "0.10.0"
+
 [dependencies]
-worker = { git = "https://github.com/White-Green/workers-rs", branch = "codegen", features = ['http', 'axum'] }
-worker-macros = { git = "https://github.com/White-Green/workers-rs", branch = "codegen", features = ['http'] }
-axum = { version = "0.8", default-features = false }
+axum = { default-features = false, version = "0.8" }
 tower-service = "0.3.3"
+worker = { branch = "codegen", features = [
+  'axum',
+  'http',
+], git = "https://github.com/White-Green/workers-rs" }
+worker-macros = { branch = "codegen", features = [
+  'http',
+], git = "https://github.com/White-Green/workers-rs" }

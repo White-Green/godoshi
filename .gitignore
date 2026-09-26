@@ -1,7 +1,10 @@
 /*
+!/.github
 !/infrastructure
 !/src
 !/.gitignore
 !/Cargo.lock
 !/Cargo.toml
+!/rustfmt.toml
+!/taplo.toml
 !/wrangler.toml

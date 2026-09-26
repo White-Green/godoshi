@@ -1,4 +1,5 @@
-use axum::{routing::get, Router};
+use axum::routing::get;
+use axum::Router;
 use tower_service::Service;
 use worker::*;
 
@@ -7,11 +8,7 @@ fn router() -> Router {
 }
 
 #[event(fetch)]
-async fn fetch(
-    req: HttpRequest,
-    _env: Env,
-    _ctx: Context,
-) -> Result<axum::http::Response<axum::body::Body>> {
+async fn fetch(req: HttpRequest, _env: Env, _ctx: Context) -> Result<axum::http::Response<axum::body::Body>> {
     Ok(router().call(req).await?)
 }
 

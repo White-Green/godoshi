@@ -1,6 +1,6 @@
-name = "godoshi"
-main = "build/index.js"
 compatibility_date = "2026-09-26"
+main = "build/index.js"
+name = "godoshi"
 
 [build]
 command = "worker-build --release"
