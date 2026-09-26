@@ -13,3 +13,10 @@ database_name = "godoshi-db"
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "godoshi-runtime-bucket"
+
+[[queues.producers]]
+binding = "JOB_QUEUE"
+queue = "godoshi-job-queue"
+
+[[queues.consumers]]
+queue = "godoshi-job-queue"

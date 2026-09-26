@@ -16,7 +16,5 @@ tower-service = "0.3.3"
 worker = { branch = "codegen", features = [
   'axum',
   'http',
-], git = "https://github.com/White-Green/workers-rs" }
-worker-macros = { branch = "codegen", features = [
-  'http',
+  'queue',
 ], git = "https://github.com/White-Green/workers-rs" }
