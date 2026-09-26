@@ -19,6 +19,7 @@ resource "cloudflare_account_token" "wrangler_deploy" {
     permission_groups = [
       { id = local.deployment_permission_group_ids["Account Settings Read"] },
       { id = local.deployment_permission_group_ids["Workers Scripts Write"] },
+      { id = local.deployment_permission_group_ids["D1 Write"] },
     ]
     resources = jsonencode({
       "com.cloudflare.api.account.${local.cloudflare_account_id}" = "*"
@@ -35,4 +36,9 @@ output "wrangler_api_token" {
 output "wrangler_account_id" {
   description = "Cloudflare account ID to use as CLOUDFLARE_ACCOUNT_ID when running wrangler deploy."
   value       = local.cloudflare_account_id
+}
+
+output "d1_database_id" {
+  description = "ID of the godoshi-db D1 database."
+  value       = cloudflare_d1_database.main_db.id
 }
