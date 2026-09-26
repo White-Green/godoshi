@@ -5,6 +5,9 @@ on:
     branches:
       - main
 
+env:
+  WRANGLER_VERSION: "4.136.3"
+
 permissions:
   contents: read
 
@@ -85,8 +88,9 @@ jobs:
       - name: Install worker-build
         run: cargo install worker-build --git https://github.com/White-Green/workers-rs --branch codegen --locked
 
-      - name: Deploy Worker
-        run: pnpm exec wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - uses: cloudflare/wrangler-action@25853364521e0d392ece9b0c1e97a4b37b638087 # v4.1.2
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: ${{ env.WRANGLER_VERSION }}
+          command: deploy
