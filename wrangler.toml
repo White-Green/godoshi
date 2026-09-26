@@ -7,8 +7,8 @@ command = "worker-build --release"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "godoshi-db"
 database_id = "345390c6-a0fb-4b9c-b8ca-9e862dfdf196"
+database_name = "godoshi-db"
 
 [[r2_buckets]]
 binding = "BUCKET"
