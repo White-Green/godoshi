@@ -9,3 +9,7 @@ variable "cloudflare_account_id" {
 provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
+
+locals {
+  cloudflare_account_id = var.cloudflare_account_id
+}
