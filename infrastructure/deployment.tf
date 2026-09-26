@@ -24,6 +24,10 @@ resource "cloudflare_account_token" "wrangler_deploy" {
       "com.cloudflare.api.account.${local.cloudflare_account_id}" = "*"
     })
   }]
+
+  lifecycle {
+    ignore_changes = [last_used_on]
+  }
 }
 
 output "wrangler_api_token" {
