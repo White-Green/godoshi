@@ -7,6 +7,13 @@ resource "cloudflare_worker" "worker" {
   }
 }
 
+resource "cloudflare_workers_custom_domain" "worker" {
+  account_id = local.cloudflare_account_id
+  hostname   = "godoshi.white-green.net"
+  service    = cloudflare_worker.worker.name
+  zone_name  = "white-green.net"
+}
+
 resource "cloudflare_d1_database" "main_db" {
   account_id = local.cloudflare_account_id
   name       = "godoshi-db"
