@@ -20,6 +20,7 @@ resource "cloudflare_account_token" "wrangler_deploy" {
       { id = local.deployment_permission_group_ids["Account Settings Read"] },
       { id = local.deployment_permission_group_ids["Workers Scripts Write"] },
       { id = local.deployment_permission_group_ids["D1 Write"] },
+      { id = local.deployment_permission_group_ids["Workers Containers Write"] },
     ]
     resources = jsonencode({
       "com.cloudflare.api.account.${local.cloudflare_account_id}" = "*"
