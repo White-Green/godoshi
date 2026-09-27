@@ -5,6 +5,19 @@ name = "godoshi-worker"
 [build]
 command = "worker-build --release"
 
+[[containers]]
+class_name = "MyContainer"
+image = "./container/Dockerfile"
+max_instances = 10
+
+[[durable_objects.bindings]]
+class_name = "MyContainer"
+name = "CONTAINER"
+
+[[migrations]]
+new_sqlite_classes = ["MyContainer"]
+tag = "v1"
+
 [[d1_databases]]
 binding = "DB"
 database_id = "345390c6-a0fb-4b9c-b8ca-9e862dfdf196"
