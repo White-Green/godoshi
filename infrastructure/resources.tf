@@ -1,6 +1,10 @@
 resource "cloudflare_worker" "worker" {
   account_id = local.cloudflare_account_id
   name       = "godoshi-worker"
+
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 resource "cloudflare_d1_database" "main_db" {
