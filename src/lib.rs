@@ -109,7 +109,7 @@ fn router(env: Env) -> Router {
     Router::new()
         .nest("/auth", auth::route())
         .nest(
-            "/:project",
+            "/{project}",
             app::route().layer(tower::builder::ServiceBuilder::new().layer(auth_layer).layer(project_layer)),
         )
         .route("/", get(root))
