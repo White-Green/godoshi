@@ -1,50 +1,113 @@
+use crate::auth::AuthSettingProvider;
+use crate::encrypted_cookie::{EncryptedCookieKey, EncryptedCookieKeyProvider};
+use crate::project::{ProjectManager, ProjectName};
+use axum::Router;
+use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::Router;
+use futures::TryStreamExt;
+use oauth2::AsyncHttpClient;
+use std::future::Future;
+use std::pin::Pin;
 use tower_service::Service;
-use worker::wasm_bindgen::JsCast;
-use worker::{
-    console_log, durable_object, event, Context, DurableObject, Env, Fetcher, HttpRequest, MessageBatch, Method, Request, Response, Result, State,
-};
+use worker::{Context, Env, HttpRequest, MessageBatch, Method, Request, console_log, event};
 
-#[durable_object]
-pub struct MyContainer {
-    state: State,
-    #[allow(dead_code)]
-    env: Env,
-}
+mod auth;
+mod encrypted_cookie;
+mod project;
 
-impl DurableObject for MyContainer {
-    fn new(state: State, env: Env) -> Self {
-        Self { state, env }
-    }
+const HOST: &str = "godoshi.white-green.net";
 
-    async fn fetch(&self, req: Request) -> Result<Response> {
-        if let Some(container) = self.state.container() {
-            if let Ok(binding) = self.state.exports().get("OutboundHandler") {
-                let outbound_fetcher = Fetcher::unchecked_from_js(binding);
-                let _ = container.intercept_all_outbound_http(&outbound_fetcher).await;
-            }
-            if !container.running() {
-                container.start(None)?;
-            }
-            let port = container.get_tcp_port(8080)?;
-            let res = port.fetch_request(req).await?;
-            Response::try_from(res)
-        } else {
-            Response::ok("Hello from Container Durable Object!")
-        }
-    }
-}
+// #[durable_object]
+// pub struct MyContainer {
+//     state: State,
+//     env: Env,
+// }
+//
+// impl DurableObject for MyContainer {
+//     fn new(state: State, env: Env) -> Self {
+//         Self { state, env }
+//     }
+//
+//     async fn fetch(&self, _req: Request) -> Result<Response> {
+//         todo!()
+//         // if let Some(container) = self.state.container() {
+//         //     if let Ok(binding) = self.state.exports().get("OutboundHandler") {
+//         //         let outbound_fetcher = Fetcher::unchecked_from_js(binding);
+//         //         let _ = container.intercept_all_outbound_http(&outbound_fetcher).await;
+//         //     }
+//         //     if !container.running() {
+//         //         container.start(None)?;
+//         //     }
+//         //     let port = container.get_tcp_port(8080)?;
+//         //     let res = port.fetch_request(req).await?;
+//         //     Response::try_from(res)
+//         // } else {
+//         //     Response::ok("Hello from Container Durable Object!")
+//         // }
+//     }
+// }
 
 #[derive(Clone)]
 struct AppState {
     env: Env,
 }
 
+impl EncryptedCookieKeyProvider for AppState {
+    fn encrypted_cookie_key(&self) -> EncryptedCookieKey {
+        let key = self.env.secret("COOKIE_KEY").unwrap().to_string();
+        EncryptedCookieKey::from_bytes(key.as_bytes())
+    }
+}
+
+impl ProjectManager for AppState {
+    fn project_exists(&self, project: &ProjectName) -> bool {
+        project == "test"
+    }
+}
+
+impl AuthSettingProvider for AppState {
+    fn client_id(&self) -> String {
+        self.env.secret("DISCORD_CLIENT_ID").unwrap().to_string()
+    }
+
+    fn client_secret(&self) -> String {
+        self.env.secret("DISCORD_CLIENT_SECRET").unwrap().to_string()
+    }
+}
+
+impl<'a> AsyncHttpClient<'a> for AppState {
+    type Error = std::io::Error;
+    type Future = Pin<Box<dyn Future<Output = std::result::Result<axum::http::Response<Vec<u8>>, Self::Error>> + 'a>>;
+
+    fn call(&'a self, request: axum::http::Request<Vec<u8>>) -> Self::Future {
+        Box::pin(async move {
+            let (parts, body) = request.into_parts();
+            let request = axum::http::Request::<Body>::from_parts(parts, Body::from(body));
+            let response = worker::Fetch::Request(request.try_into().map_err(std::io::Error::other)?)
+                .send()
+                .await
+                .map_err(std::io::Error::other)?;
+            let response = axum::http::Response::<Body>::from(response);
+            let (parts, body) = response.into_parts();
+            let body = body
+                .into_data_stream()
+                .try_fold(Vec::new(), |mut acc, chunk| {
+                    acc.extend(chunk);
+                    std::future::ready(Ok(acc))
+                })
+                .await
+                .map_err(std::io::Error::other)?;
+
+            Ok(axum::http::Response::from_parts(parts, body))
+        })
+    }
+}
+
 fn router(env: Env) -> Router {
     Router::new()
+        .nest("/auth", auth::route(AppState { env: env.clone() }))
         .route("/", get(root))
         .route("/container", get(container_handler))
         .route("/container/outbound", get(container_outbound_handler))
