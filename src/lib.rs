@@ -1,20 +1,20 @@
-use crate::auth::AuthSettingProvider;
+use crate::auth::discord::AuthSettingProvider;
 use crate::encrypted_cookie::{EncryptedCookieKey, EncryptedCookieKeyProvider};
+use crate::http::HttpClient;
 use crate::project::{ProjectManager, ProjectName};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State as AxumState;
-use axum::http::StatusCode;
+use axum::http::{Response, StatusCode};
 use axum::routing::get;
 use futures::TryStreamExt;
-use oauth2::AsyncHttpClient;
-use std::future::Future;
-use std::pin::Pin;
 use tower_service::Service;
 use worker::{Context, Env, HttpRequest, MessageBatch, Method, Request, console_log, event};
 
+mod app;
 mod auth;
 mod encrypted_cookie;
+mod http;
 mod project;
 
 const HOST: &str = "godoshi.white-green.net";
@@ -77,41 +77,45 @@ impl AuthSettingProvider for AppState {
     }
 }
 
-impl<'a> AsyncHttpClient<'a> for AppState {
+impl HttpClient for AppState {
     type Error = std::io::Error;
-    type Future = Pin<Box<dyn Future<Output = std::result::Result<axum::http::Response<Vec<u8>>, Self::Error>> + 'a>>;
 
-    fn call(&'a self, request: axum::http::Request<Vec<u8>>) -> Self::Future {
-        Box::pin(async move {
-            let (parts, body) = request.into_parts();
-            let request = axum::http::Request::<Body>::from_parts(parts, Body::from(body));
-            let response = worker::Fetch::Request(request.try_into().map_err(std::io::Error::other)?)
-                .send()
-                .await
-                .map_err(std::io::Error::other)?;
-            let response = axum::http::Response::<Body>::from(response);
-            let (parts, body) = response.into_parts();
-            let body = body
-                .into_data_stream()
-                .try_fold(Vec::new(), |mut acc, chunk| {
-                    acc.extend(chunk);
-                    std::future::ready(Ok(acc))
-                })
-                .await
-                .map_err(std::io::Error::other)?;
+    async fn call(&self, request: axum::http::Request<Vec<u8>>) -> Result<Response<Vec<u8>>, Self::Error> {
+        let (parts, body) = request.into_parts();
+        let request = axum::http::Request::<Body>::from_parts(parts, Body::from(body));
+        let response = worker::Fetch::Request(request.try_into().map_err(std::io::Error::other)?)
+            .send()
+            .await
+            .map_err(std::io::Error::other)?;
+        let response = axum::http::Response::<Body>::from(response);
+        let (parts, body) = response.into_parts();
+        let body = body
+            .into_data_stream()
+            .try_fold(Vec::new(), |mut acc, chunk| {
+                acc.extend(chunk);
+                std::future::ready(Ok(acc))
+            })
+            .await
+            .map_err(std::io::Error::other)?;
 
-            Ok(axum::http::Response::from_parts(parts, body))
-        })
+        Ok(Response::from_parts(parts, body))
     }
 }
 
 fn router(env: Env) -> Router {
+    let state = AppState { env };
+    let auth_layer = axum::middleware::from_fn_with_state(state.clone(), auth::middleware::<AppState>);
+    let project_layer = axum::middleware::from_fn_with_state(state.clone(), project::middleware::<AppState>);
     Router::new()
-        .nest("/auth", auth::route(AppState { env: env.clone() }))
+        .nest("/auth", auth::route())
+        .nest(
+            "/:project",
+            app::route().layer(tower::builder::ServiceBuilder::new().layer(auth_layer).layer(project_layer)),
+        )
         .route("/", get(root))
         .route("/container", get(container_handler))
         .route("/container/outbound", get(container_outbound_handler))
-        .with_state(AppState { env })
+        .with_state(state)
 }
 
 #[event(fetch)]

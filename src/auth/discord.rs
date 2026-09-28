@@ -1,6 +1,7 @@
 use crate::HOST;
 use crate::auth::{AuthState, set_auth_state};
 use crate::encrypted_cookie::{EncryptedCookieJar, EncryptedCookieKeyProvider};
+use crate::http::{HttpClient, OAuthHttpClient};
 use crate::project::{ProjectManager, ProjectName};
 use axum::body::Body;
 use axum::extract::{Query, State};
@@ -12,12 +13,13 @@ use oauth2::basic::{
     BasicClient, BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse, BasicTokenResponse, BasicTokenType,
 };
 use oauth2::{
-    AsyncHttpClient, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, RevocationUrl, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
+    AccessToken, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, RefreshToken, RequestTokenError, RevocationUrl, Scope, StandardRevocableToken, TokenResponse, TokenUrl,
 };
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use std::time::Duration;
+use std::error::Error;
+use thiserror::Error;
 
 pub trait AuthSettingProvider {
     fn client_id(&self) -> String;
@@ -26,7 +28,7 @@ pub trait AuthSettingProvider {
 
 pub fn route<S>() -> Router<S>
 where
-    for<'a> S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + ProjectManager + AuthSettingProvider + AsyncHttpClient<'a>,
+    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + ProjectManager + AuthSettingProvider + HttpClient,
 {
     Router::new()
         .route("/", axum::routing::get(auth::<S>))
@@ -134,7 +136,7 @@ async fn callback<S>(
     }): Query<CallbackParam>,
 ) -> Response<Body>
 where
-    for<'a> S: EncryptedCookieKeyProvider + AuthSettingProvider + AsyncHttpClient<'a>,
+    S: EncryptedCookieKeyProvider + AuthSettingProvider + HttpClient,
 {
     let auth_flow_state_cookie = cookie_jar.get(AUTH_FLOW_STATE_COOKIE_NAME);
     let cookie_jar = cookie_jar.add(Cookie::build(AUTH_FLOW_STATE_COOKIE_NAME).max_age(time::Duration::seconds(0)));
@@ -156,7 +158,7 @@ where
     let token = match auth_client(&state)
         .exchange_code(exchange_code)
         .set_pkce_verifier(pkce_verifier)
-        .request_async(&state)
+        .request_async(&OAuthHttpClient(&state))
         .await
     {
         Ok(response) => response,
@@ -168,47 +170,154 @@ where
     let access_token = token.access_token();
     assert_eq!(token.token_type(), &BasicTokenType::Bearer);
 
+    let auth_state = match construct_auth_state(&state, access_token).await {
+        Ok(auth_state) => auth_state,
+        Err(_) => return (cookie_jar, StatusCode::BAD_REQUEST).into_response(),
+    };
+
+    let expires_in = time::Duration::seconds(token.expires_in().map_or(3600, |duration| duration.as_secs() as i64));
+    let cookie_jar = set_auth_state(cookie_jar, &project, auth_state, expires_in);
+    let cookie_jar = if let Some(refresh_token) = token.refresh_token() {
+        set_discord_auth_state(
+            cookie_jar,
+            &project,
+            DiscordAuthState {
+                refresh_token: refresh_token.clone(),
+            },
+        )
+    } else {
+        cookie_jar
+    };
+
+    (cookie_jar, Redirect::to(&redirect)).into_response()
+}
+
+#[derive(Debug, Error)]
+enum ConstructAuthStateError<E> {
+    #[error(transparent)]
+    HttpError(E),
+    #[error(transparent)]
+    DeserializeError(#[from] serde_json::Error),
+    #[error("Bot account")]
+    BotAccount,
+}
+
+async fn construct_auth_state<S>(state: &S, access_token: &AccessToken) -> Result<AuthState, ConstructAuthStateError<S::Error>>
+where
+    S: HttpClient,
+{
     let request = http::request::Builder::new()
         .uri("https://discord.com/api/users/@me")
         .header(http::header::AUTHORIZATION, format!("Bearer {}", access_token.secret()))
         .body(Vec::new())
         .unwrap();
 
-    let result = state.call(request).await;
-    let response = match result {
-        Ok(response) => response,
-        Err(_) => {
-            return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
-        }
-    };
+    let response = state.call(request).await.map_err(ConstructAuthStateError::HttpError)?;
+
+    let me_response = serde_json::from_slice::<MeResponse>(response.body().as_slice())?;
+    if me_response.bot {
+        return Err(ConstructAuthStateError::BotAccount);
+    }
+
+    return Ok(AuthState {
+        user_id: me_response.username,
+    });
 
     #[derive(Deserialize)]
     struct MeResponse {
-        id: SmolStr,
+        username: SmolStr,
         #[serde(default)]
         bot: bool,
     }
-
-    let me_response = match serde_json::from_slice::<MeResponse>(response.body().as_slice()) {
-        Ok(response) => response,
-        Err(_) => {
-            return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
-        }
-    };
-
-    if me_response.bot {
-        return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
-    }
-
-    let auth_state = AuthState { user_id: me_response.id };
-    let cookie_jar = set_auth_state(
-        cookie_jar,
-        &project,
-        auth_state,
-        time::Duration::seconds(token.expires_in().unwrap_or(Duration::from_secs(3600)).as_secs() as i64),
-    );
-
-    (cookie_jar, Redirect::to(&redirect)).into_response()
 }
 
-// TODO: refresh tokenを保存など
+#[derive(Debug, Error)]
+pub enum RefreshAuthStateError<E: Error + 'static> {
+    #[error(transparent)]
+    HttpError(E),
+    #[error(transparent)]
+    DeserializeError(#[from] serde_json::Error),
+    #[error("Bot account")]
+    BotAccount,
+    #[error("Refresh token not exists")]
+    RefreshTokenNotExists,
+    #[error(transparent)]
+    TokenExchangeError(#[from] RequestTokenError<E, BasicErrorResponse>),
+}
+
+impl<E: Error + 'static> From<ConstructAuthStateError<E>> for RefreshAuthStateError<E> {
+    fn from(value: ConstructAuthStateError<E>) -> Self {
+        match value {
+            ConstructAuthStateError::HttpError(e) => RefreshAuthStateError::HttpError(e),
+            ConstructAuthStateError::DeserializeError(e) => RefreshAuthStateError::DeserializeError(e),
+            ConstructAuthStateError::BotAccount => RefreshAuthStateError::BotAccount,
+        }
+    }
+}
+
+pub async fn try_refresh_auth_state<S>(
+    state: &S,
+    cookie_jar: EncryptedCookieJar,
+    project: &ProjectName,
+) -> (EncryptedCookieJar, Result<AuthState, RefreshAuthStateError<S::Error>>)
+where
+    S: AuthSettingProvider + HttpClient,
+{
+    let Some(DiscordAuthState { refresh_token }) = get_discord_auth_state(&cookie_jar, project) else {
+        return (cookie_jar, Err(RefreshAuthStateError::RefreshTokenNotExists));
+    };
+
+    let token = match auth_client(state)
+        .exchange_refresh_token(&refresh_token)
+        .request_async(&OAuthHttpClient(state))
+        .await
+    {
+        Ok(token) => token,
+        Err(err) => return (cookie_jar, Err(RefreshAuthStateError::TokenExchangeError(err))),
+    };
+
+    let cookie_jar = if let Some(refresh_token) = token.refresh_token() {
+        set_discord_auth_state(
+            cookie_jar,
+            project,
+            DiscordAuthState {
+                refresh_token: refresh_token.clone(),
+            },
+        )
+    } else {
+        cookie_jar
+    };
+
+    let auth_state = match construct_auth_state(state, token.access_token()).await {
+        Ok(auth_state) => auth_state,
+        Err(err) => return (cookie_jar, Err(err.into())),
+    };
+
+    (cookie_jar, Ok(auth_state))
+}
+
+const DISCORD_AUTH_STATE_COOKIE_NAME: &str = "godoshi_discord_auth_state";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DiscordAuthState {
+    refresh_token: RefreshToken,
+}
+
+fn set_discord_auth_state(cookie_jar: EncryptedCookieJar, project: &ProjectName, discord_auth_state: DiscordAuthState) -> EncryptedCookieJar {
+    cookie_jar.add(
+        Cookie::build((
+            format!("{DISCORD_AUTH_STATE_COOKIE_NAME}_{project}"),
+            serde_json::to_string(&discord_auth_state).unwrap(),
+        ))
+        .http_only(true)
+        .secure(true)
+        .max_age(time::Duration::days(30))
+        .build(),
+    )
+}
+
+fn get_discord_auth_state(cookie_jar: &EncryptedCookieJar, project: &ProjectName) -> Option<DiscordAuthState> {
+    let cookie = cookie_jar.get(&format!("{DISCORD_AUTH_STATE_COOKIE_NAME}_{project}"))?;
+    let discord_auth_state = serde_json::from_str::<DiscordAuthState>(cookie.value()).ok()?;
+    Some(discord_auth_state)
+}

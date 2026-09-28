@@ -1,3 +1,9 @@
+use axum::body::Body;
+use axum::extract::{Path, State};
+use axum::http::{Request, Response};
+use axum::middleware::Next;
+use axum::response::IntoResponse;
+use oauth2::http::StatusCode;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
 use std::fmt::{Debug, Display, Formatter};
@@ -50,4 +56,26 @@ impl PartialEq<str> for ProjectName {
 
 pub trait ProjectManager {
     fn project_exists(&self, project: &ProjectName) -> bool;
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectNamePath {
+    project: ProjectName,
+}
+
+#[worker::send]
+pub async fn middleware<S>(
+    State(state): State<S>,
+    Path(ProjectNamePath { project }): Path<ProjectNamePath>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response<Body>
+where
+    S: ProjectManager,
+{
+    if !state.project_exists(&project) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    request.extensions_mut().insert(project);
+    next.run(request).await
 }
