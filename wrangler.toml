@@ -6,6 +6,9 @@ workers_dev = false
 [build]
 command = "worker-build --release"
 
+[vars]
+BASE_URL = "https://godoshi.white-green.net"
+
 [[containers]]
 class_name = "MyContainer"
 image = "./container/Dockerfile"
