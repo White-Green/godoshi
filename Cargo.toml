@@ -1,6 +1,6 @@
 [package]
 authors = ["White-Green <43771790+White-Green@users.noreply.github.com>"]
-edition = "2021"
+edition = "2024"
 name = "godoshi"
 version = "0.1.0"
 
@@ -11,7 +11,26 @@ crate-type = ["cdylib"]
 taplo-cli = "0.10.0"
 
 [dependencies]
-axum = { default-features = false, version = "0.8" }
+axum = { default-features = false, features = [
+  "json",
+  "macros",
+  "original-uri",
+  "query",
+], version = "0.8.9" }
+axum-extra = { default-features = false, features = [
+  "cookie-key-expansion",
+  "cookie-private",
+], version = "0.12.6" }
+futures = "0.3.34"
+oauth2 = { default-features = false, features = [
+  "timing-resistant-secret-traits",
+], version = "5.0.0" }
+serde = { features = ["derive"], version = "1.0.229" }
+serde_json = "1.0.151"
+smol_str = { features = ["serde"], version = "0.3.6" }
+thiserror = "2.0.21"
+time = { features = ["wasm-bindgen"], version = "0.3.55" }
+tower = "0.5.3"
 tower-service = "0.3.3"
 wasm-bindgen = "0.2"
 worker = { branch = "codegen", features = [
