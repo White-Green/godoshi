@@ -1,5 +1,5 @@
-use crate::HOST;
 use crate::auth::{AuthState, set_auth_state};
+use crate::config::BaseUrlProvider;
 use crate::encrypted_cookie::{EncryptedCookieJar, EncryptedCookieKeyProvider};
 use crate::http::{HttpClient, OAuthHttpClient};
 use crate::project::ProjectName;
@@ -29,14 +29,14 @@ pub trait AuthSettingProvider {
 
 pub fn route<S>() -> Router<S>
 where
-    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + AuthSettingProvider + HttpClient,
+    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + AuthSettingProvider + BaseUrlProvider + HttpClient,
 {
     Router::new()
         .route("/", axum::routing::get(auth::<S>))
         .route("/callback", axum::routing::get(callback::<S>))
 }
 
-fn auth_client<P: AuthSettingProvider>(
+fn auth_client<P: AuthSettingProvider + BaseUrlProvider>(
     provider: &P,
 ) -> Client<
     BasicErrorResponse,
@@ -59,7 +59,7 @@ fn auth_client<P: AuthSettingProvider>(
         .set_auth_uri(AuthUrl::new(AUTH_URL.to_string()).unwrap())
         .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).unwrap())
         .set_revocation_url(RevocationUrl::new(REVOKE_URL.to_string()).unwrap())
-        .set_redirect_uri(RedirectUrl::new(format!("https://{HOST}/auth/discord/callback")).unwrap())
+        .set_redirect_uri(RedirectUrl::new(format!("{}{AUTH_FLOW_STATE_COOKIE_PATH}", provider.base_url().trim_end_matches('/'))).unwrap())
 }
 
 const AUTH_FLOW_STATE_COOKIE_NAME: &str = "godoshi_auth_flow_state";
@@ -97,7 +97,7 @@ fn project_redirect(project: &ProjectName, redirect: &str) -> Option<SmolStr> {
 #[tracing::instrument(name = "discord_auth", skip_all, fields(%project))]
 async fn auth<S>(State(state): State<S>, cookie_jar: EncryptedCookieJar, Query(AuthParam { project, redirect }): Query<AuthParam>) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + AuthSettingProvider,
+    S: EncryptedCookieKeyProvider + AuthSettingProvider + BaseUrlProvider,
 {
     let Some(redirect) = project_redirect(&project, &redirect) else {
         tracing::warn!(reason = "invalid_redirect", "Discord login rejected");
@@ -148,7 +148,7 @@ async fn callback<S>(
     }): Query<CallbackParam>,
 ) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + AuthSettingProvider + HttpClient,
+    S: EncryptedCookieKeyProvider + AuthSettingProvider + BaseUrlProvider + HttpClient,
 {
     let auth_flow_state_cookie = cookie_jar.get(AUTH_FLOW_STATE_COOKIE_NAME);
     let cookie_jar = cookie_jar.remove(Cookie::build(AUTH_FLOW_STATE_COOKIE_NAME).path(AUTH_FLOW_STATE_COOKIE_PATH));
@@ -309,7 +309,7 @@ pub type TryRefreshAuthStateResult<E> = (EncryptedCookieJar, Result<(AuthState, 
 #[tracing::instrument(name = "discord_refresh", skip_all, fields(%project))]
 pub async fn try_refresh_auth_state<S>(state: &S, cookie_jar: EncryptedCookieJar, project: &ProjectName) -> TryRefreshAuthStateResult<S::Error>
 where
-    S: AuthSettingProvider + HttpClient,
+    S: AuthSettingProvider + BaseUrlProvider + HttpClient,
 {
     let Some(DiscordAuthState { refresh_token }) = get_discord_auth_state(&cookie_jar, project) else {
         tracing::debug!("No refresh token available");

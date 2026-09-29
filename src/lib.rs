@@ -1,4 +1,5 @@
 use crate::auth::discord::AuthSettingProvider;
+use crate::config::BaseUrlProvider;
 use crate::encrypted_cookie::{EncryptedCookieKey, EncryptedCookieKeyProvider};
 use crate::http::HttpClient;
 use crate::project::{ProjectManager, ProjectName};
@@ -13,11 +14,10 @@ use worker::{Context, DurableObject, Env, HttpRequest, MessageBatch, MessageExt,
 
 mod app;
 mod auth;
+mod config;
 mod encrypted_cookie;
 mod http;
 mod project;
-
-const HOST: &str = "godoshi.white-green.net";
 
 #[event(start)]
 fn start() {
@@ -100,6 +100,16 @@ impl AuthSettingProvider for AppState {
             .secret("DISCORD_CLIENT_SECRET")
             .inspect_err(|_| tracing::error!(binding = "DISCORD_CLIENT_SECRET", "Required secret unavailable"))
             .unwrap()
+            .to_string()
+    }
+}
+
+impl BaseUrlProvider for AppState {
+    fn base_url(&self) -> String {
+        self.env
+            .var("BASE_URL")
+            .inspect_err(|_| tracing::error!(binding = "BASE_URL", "Required configuration unavailable"))
+            .expect("BASE_URL must be configured")
             .to_string()
     }
 }

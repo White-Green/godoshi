@@ -1,3 +1,4 @@
+use crate::config::BaseUrlProvider;
 use crate::encrypted_cookie::{EncryptedCookieJar, EncryptedCookieKeyProvider};
 use crate::http::HttpClient;
 use crate::project::ProjectName;
@@ -31,7 +32,7 @@ struct AuthStateCookie {
 
 pub fn route<S>() -> Router<S>
 where
-    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + discord::AuthSettingProvider + HttpClient,
+    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + discord::AuthSettingProvider + BaseUrlProvider + HttpClient,
 {
     Router::new().nest("/discord", discord::route::<S>())
 }
@@ -79,7 +80,7 @@ pub async fn middleware<S>(
     next: Next,
 ) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + discord::AuthSettingProvider + HttpClient,
+    S: EncryptedCookieKeyProvider + discord::AuthSettingProvider + BaseUrlProvider + HttpClient,
 {
     if let Some(auth_state) = get_auth_state(&cookie_jar, &project) {
         tracing::debug!(%project, "Authenticated using session cookie");
