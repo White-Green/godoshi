@@ -10,7 +10,8 @@ use axum::response::{IntoResponse, Redirect};
 use axum::{Router, http};
 use axum_extra::extract::cookie::Cookie;
 use oauth2::basic::{
-    BasicClient, BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse, BasicTokenResponse, BasicTokenType,
+    BasicClient, BasicErrorResponse, BasicErrorResponseType, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse, BasicTokenResponse,
+    BasicTokenType,
 };
 use oauth2::{
     AccessToken, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken, EndpointNotSet, EndpointSet, PkceCodeChallenge,
@@ -93,11 +94,13 @@ fn project_redirect(project: &ProjectName, redirect: &str) -> Option<SmolStr> {
     ((suffix.is_empty() || suffix.starts_with('/')) && !path.contains("..")).then(|| redirect.into())
 }
 
+#[tracing::instrument(name = "discord_auth", skip_all, fields(%project))]
 async fn auth<S>(State(state): State<S>, cookie_jar: EncryptedCookieJar, Query(AuthParam { project, redirect }): Query<AuthParam>) -> Response<Body>
 where
     S: EncryptedCookieKeyProvider + AuthSettingProvider,
 {
     let Some(redirect) = project_redirect(&project, &redirect) else {
+        tracing::warn!(reason = "invalid_redirect", "Discord login rejected");
         return StatusCode::BAD_REQUEST.into_response();
     };
 
@@ -124,6 +127,7 @@ where
             .build(),
     );
 
+    tracing::info!("Discord login started");
     (cookie_jar, Redirect::to(auth_url.as_str())).into_response()
 }
 
@@ -134,6 +138,7 @@ struct CallbackParam {
 }
 
 #[worker::send]
+#[tracing::instrument(name = "discord_callback", skip_all, fields(project))]
 async fn callback<S>(
     State(state): State<S>,
     cookie_jar: EncryptedCookieJar,
@@ -157,9 +162,12 @@ where
     {
         auth_flow_state
     } else {
+        tracing::warn!(reason = "missing_or_invalid_flow_cookie", "Discord callback rejected");
         return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
     };
+    tracing::Span::current().record("project", tracing::field::display(&project));
     if csrf_token_from_callback != csrf_token {
+        tracing::warn!(reason = "csrf_mismatch", "Discord callback rejected");
         return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
     }
     let token = match auth_client(&state)
@@ -169,7 +177,8 @@ where
         .await
     {
         Ok(response) => response,
-        Err(_) => {
+        Err(error) => {
+            tracing::warn!(reason = token_error_reason(&error), "Discord authorization code exchange failed");
             return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
         }
     };
@@ -196,7 +205,25 @@ where
         cookie_jar
     };
 
+    tracing::info!("Discord login succeeded");
     (cookie_jar, Redirect::to(&redirect)).into_response()
+}
+
+fn token_error_reason<E: Error + 'static>(error: &RequestTokenError<E, BasicErrorResponse>) -> &'static str {
+    match error {
+        RequestTokenError::ServerResponse(response) => match response.error() {
+            BasicErrorResponseType::InvalidClient => "invalid_client",
+            BasicErrorResponseType::InvalidGrant => "invalid_grant",
+            BasicErrorResponseType::InvalidRequest => "invalid_request",
+            BasicErrorResponseType::InvalidScope => "invalid_scope",
+            BasicErrorResponseType::UnauthorizedClient => "unauthorized_client",
+            BasicErrorResponseType::UnsupportedGrantType => "unsupported_grant_type",
+            BasicErrorResponseType::Extension(_) => "provider_error",
+        },
+        RequestTokenError::Request(_) => "http_error",
+        RequestTokenError::Parse(..) => "invalid_response",
+        RequestTokenError::Other(_) => "unexpected_response",
+    }
 }
 
 #[derive(Debug, Error)]
@@ -209,6 +236,7 @@ enum ConstructAuthStateError<E> {
     BotAccount,
 }
 
+#[tracing::instrument(name = "discord_profile", skip_all)]
 async fn construct_auth_state<S>(state: &S, access_token: &AccessToken) -> Result<AuthState, ConstructAuthStateError<S::Error>>
 where
     S: HttpClient,
@@ -219,10 +247,22 @@ where
         .body(Vec::new())
         .unwrap();
 
-    let response = state.call(request).await.map_err(ConstructAuthStateError::HttpError)?;
+    let response = state
+        .call(request)
+        .await
+        .inspect_err(|_| tracing::warn!(reason = "http_error", "Discord profile lookup failed"))
+        .map_err(ConstructAuthStateError::HttpError)?;
 
-    let me_response = serde_json::from_slice::<MeResponse>(response.body().as_slice())?;
+    let me_response = serde_json::from_slice::<MeResponse>(response.body().as_slice()).inspect_err(|error| {
+        tracing::warn!(
+            status = response.status().as_u16(),
+            reason = "invalid_response",
+            category = ?error.classify(),
+            "Discord profile lookup failed"
+        );
+    })?;
     if me_response.bot {
+        tracing::warn!(reason = "bot_account", "Discord profile rejected");
         return Err(ConstructAuthStateError::BotAccount);
     }
 
@@ -264,6 +304,7 @@ impl<E: Error + 'static> From<ConstructAuthStateError<E>> for RefreshAuthStateEr
     }
 }
 
+#[tracing::instrument(name = "discord_refresh", skip_all, fields(%project))]
 pub async fn try_refresh_auth_state<S>(
     state: &S,
     cookie_jar: EncryptedCookieJar,
@@ -273,6 +314,7 @@ where
     S: AuthSettingProvider + HttpClient,
 {
     let Some(DiscordAuthState { refresh_token }) = get_discord_auth_state(&cookie_jar, project) else {
+        tracing::debug!("No refresh token available");
         return (cookie_jar, Err(RefreshAuthStateError::RefreshTokenNotExists));
     };
 
@@ -282,7 +324,10 @@ where
         .await
     {
         Ok(token) => token,
-        Err(err) => return (cookie_jar, Err(RefreshAuthStateError::TokenExchangeError(err))),
+        Err(err) => {
+            tracing::warn!(reason = token_error_reason(&err), "Discord token refresh failed");
+            return (cookie_jar, Err(RefreshAuthStateError::TokenExchangeError(err)));
+        }
     };
 
     let cookie_jar = if let Some(refresh_token) = token.refresh_token() {
@@ -303,6 +348,7 @@ where
     };
 
     let expires_in = time::Duration::seconds(token.expires_in().map_or(3600, |duration| duration.as_secs() as i64));
+    tracing::info!("Discord session refreshed");
     (cookie_jar, Ok((auth_state, expires_in)))
 }
 
@@ -329,6 +375,8 @@ fn set_discord_auth_state(cookie_jar: EncryptedCookieJar, project: &ProjectName,
 
 fn get_discord_auth_state(cookie_jar: &EncryptedCookieJar, project: &ProjectName) -> Option<DiscordAuthState> {
     let cookie = cookie_jar.get(&format!("{DISCORD_AUTH_STATE_COOKIE_NAME}_{project}"))?;
-    let discord_auth_state = serde_json::from_str::<DiscordAuthState>(cookie.value()).ok()?;
+    let discord_auth_state = serde_json::from_str::<DiscordAuthState>(cookie.value())
+        .inspect_err(|_| tracing::warn!(%project, "Invalid Discord refresh cookie"))
+        .ok()?;
     Some(discord_auth_state)
 }

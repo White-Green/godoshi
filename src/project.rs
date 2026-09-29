@@ -74,8 +74,10 @@ where
     S: ProjectManager,
 {
     if !state.project_exists(&project) {
+        tracing::info!(%project, "Project not found");
         return StatusCode::NOT_FOUND.into_response();
     }
+    tracing::debug!(%project, "Project resolved");
     request.extensions_mut().insert(project);
     next.run(request).await
 }

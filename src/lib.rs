@@ -9,7 +9,7 @@ use axum::http::{Response, StatusCode};
 use axum::routing::get;
 use futures::TryStreamExt;
 use tower_service::Service;
-use worker::{Context, DurableObject, Env, HttpRequest, MessageBatch, Method, Request, State, console_log, durable_object, event};
+use worker::{Context, DurableObject, Env, HttpRequest, MessageBatch, MessageExt, Method, Request, State, durable_object, event};
 
 mod app;
 mod auth;
@@ -18,6 +18,18 @@ mod http;
 mod project;
 
 const HOST: &str = "godoshi.white-green.net";
+
+#[event(start)]
+fn start() {
+    // The start event runs once per isolate, including Durable Object and named entrypoints.
+    tracing_subscriber::fmt()
+        .json()
+        .with_ansi(false)
+        .without_time() // Workers supplies timestamps; std::time is unavailable on this target.
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(tracing_web::MakeWebConsoleWriter::new())
+        .init();
+}
 
 #[durable_object]
 #[allow(unused)]
@@ -32,6 +44,7 @@ impl DurableObject for MyContainer {
     }
 
     async fn fetch(&self, _req: Request) -> Result<worker::Response, worker::Error> {
+        tracing::error!("Container Durable Object fetch is not implemented");
         todo!()
         // if let Some(container) = self.state.container() {
         //     if let Ok(binding) = self.state.exports().get("OutboundHandler") {
@@ -57,7 +70,12 @@ struct AppState {
 
 impl EncryptedCookieKeyProvider for AppState {
     fn encrypted_cookie_key(&self) -> EncryptedCookieKey {
-        let key = self.env.secret("COOKIE_KEY").unwrap().to_string();
+        let key = self
+            .env
+            .secret("COOKIE_KEY")
+            .inspect_err(|_| tracing::error!(binding = "COOKIE_KEY", "Required secret unavailable"))
+            .unwrap()
+            .to_string();
         EncryptedCookieKey::from_bytes(key.as_bytes())
     }
 }
@@ -70,23 +88,42 @@ impl ProjectManager for AppState {
 
 impl AuthSettingProvider for AppState {
     fn client_id(&self) -> String {
-        self.env.secret("DISCORD_CLIENT_ID").unwrap().to_string()
+        self.env
+            .secret("DISCORD_CLIENT_ID")
+            .inspect_err(|_| tracing::error!(binding = "DISCORD_CLIENT_ID", "Required secret unavailable"))
+            .unwrap()
+            .to_string()
     }
 
     fn client_secret(&self) -> String {
-        self.env.secret("DISCORD_CLIENT_SECRET").unwrap().to_string()
+        self.env
+            .secret("DISCORD_CLIENT_SECRET")
+            .inspect_err(|_| tracing::error!(binding = "DISCORD_CLIENT_SECRET", "Required secret unavailable"))
+            .unwrap()
+            .to_string()
     }
 }
 
 impl HttpClient for AppState {
     type Error = std::io::Error;
 
+    #[tracing::instrument(
+        name = "http_client",
+        skip_all,
+        fields(method = %request.method(), host = request.uri().host().unwrap_or_default(), path = request.uri().path())
+    )]
     async fn call(&self, request: axum::http::Request<Vec<u8>>) -> Result<Response<Vec<u8>>, Self::Error> {
+        let started = time::OffsetDateTime::now_utc();
         let (parts, body) = request.into_parts();
         let request = axum::http::Request::<Body>::from_parts(parts, Body::from(body));
-        let response = worker::Fetch::Request(request.try_into().map_err(std::io::Error::other)?)
+        let request = request
+            .try_into()
+            .inspect_err(|_| tracing::error!(stage = "request_conversion", "External request failed"))
+            .map_err(std::io::Error::other)?;
+        let response = worker::Fetch::Request(request)
             .send()
             .await
+            .inspect_err(|_| tracing::error!(stage = "send", "External request failed"))
             .map_err(std::io::Error::other)?;
         let response = axum::http::Response::<Body>::from(response);
         let (parts, body) = response.into_parts();
@@ -97,8 +134,18 @@ impl HttpClient for AppState {
                 std::future::ready(Ok(acc))
             })
             .await
+            .inspect_err(|_| tracing::error!(stage = "response_body", "External request failed"))
             .map_err(std::io::Error::other)?;
 
+        let status = parts.status.as_u16();
+        let elapsed_ms = (time::OffsetDateTime::now_utc() - started).as_seconds_f64() * 1000.0;
+        if parts.status.is_server_error() {
+            tracing::error!(status, elapsed_ms, "External request completed");
+        } else if parts.status.is_client_error() {
+            tracing::warn!(status, elapsed_ms, "External request completed");
+        } else {
+            tracing::info!(status, elapsed_ms, "External request completed");
+        }
         Ok(Response::from_parts(parts, body))
     }
 }
@@ -122,13 +169,24 @@ fn router(env: Env) -> Router {
 }
 
 #[event(fetch)]
+#[tracing::instrument(name = "http_request", skip_all, fields(method = %req.method(), path = req.uri().path()), err)]
 async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum::http::Response<axum::body::Body>> {
-    Ok(router(env).call(req).await?)
+    let started = time::OffsetDateTime::now_utc();
+    let response = router(env).call(req).await?;
+    let status = response.status().as_u16();
+    let elapsed_ms = (time::OffsetDateTime::now_utc() - started).as_seconds_f64() * 1000.0;
+    if response.status().is_server_error() {
+        tracing::error!(status, elapsed_ms, "Request completed");
+    } else {
+        tracing::info!(status, elapsed_ms, "Request completed");
+    }
+    Ok(response)
 }
 
 #[event(fetch, entrypoint = "OutboundHandler")]
+#[tracing::instrument(name = "outbound_request", skip_all, fields(method = %req.method(), path = req.uri().path()), err)]
 async fn outbound_handler(req: HttpRequest, _env: Env, _ctx: Context) -> worker::Result<axum::http::Response<axum::body::Body>> {
-    console_log!("OutboundHandler intercepted request: uri={}", req.uri());
+    tracing::info!("OutboundHandler intercepted request");
     let body = format!("Hello from OutboundHandler! Intercepted request to: {}", req.uri());
     Ok(axum::http::Response::builder()
         .status(StatusCode::OK)
@@ -138,10 +196,15 @@ async fn outbound_handler(req: HttpRequest, _env: Env, _ctx: Context) -> worker:
 }
 
 #[event(queue)]
+#[tracing::instrument(name = "queue", skip_all, fields(queue = %message_batch.queue()), err)]
 async fn queue(message_batch: MessageBatch<()>, _env: Env, _ctx: Context) -> worker::Result<()> {
-    for message in message_batch.messages()? {
-        console_log!("Received message from queue {}: {:?}", message_batch.queue(), message.body());
+    let messages = message_batch.messages()?;
+    let message_count = messages.len();
+    tracing::info!(message_count, "Processing queue batch");
+    for message in messages {
+        tracing::debug!(message_id = %message.id(), "Received message from queue");
     }
+    tracing::info!(message_count, "Queue batch completed");
     Ok(())
 }
 
@@ -159,20 +222,28 @@ async fn container_outbound_handler(AxumState(state): AxumState<AppState>) -> st
     fetch_container(&state.env, "http://container/outbound").await
 }
 
+#[tracing::instrument(name = "container_request", skip_all)]
 async fn fetch_container(env: &Env, url: &str) -> std::result::Result<String, (StatusCode, String)> {
-    let namespace = env
-        .durable_object("CONTAINER")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let error_response = |stage: &'static str, error: worker::Error| {
+        tracing::error!(stage, "Container request failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+    };
+    let namespace = env.durable_object("CONTAINER").map_err(|e| error_response("binding", e))?;
     let stub = namespace
         .id_from_name("default")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| error_response("object_id", e))?
         .get_stub()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let req = Request::new(url, Method::Get).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut response = stub
-        .fetch_with_request(req)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let text = response.text().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| error_response("stub", e))?;
+    let req = Request::new(url, Method::Get).map_err(|e| error_response("request_creation", e))?;
+    let mut response = stub.fetch_with_request(req).await.map_err(|e| error_response("send", e))?;
+    let status = response.status_code();
+    let text = response.text().await.map_err(|e| error_response("response_body", e))?;
+    if status >= 500 {
+        tracing::error!(status, "Container request completed");
+    } else if status >= 400 {
+        tracing::warn!(status, "Container request completed");
+    } else {
+        tracing::info!(status, "Container request completed");
+    }
     Ok(text)
 }
