@@ -304,12 +304,10 @@ impl<E: Error + 'static> From<ConstructAuthStateError<E>> for RefreshAuthStateEr
     }
 }
 
+pub type TryRefreshAuthStateResult<E> = (EncryptedCookieJar, Result<(AuthState, time::Duration), RefreshAuthStateError<E>>);
+
 #[tracing::instrument(name = "discord_refresh", skip_all, fields(%project))]
-pub async fn try_refresh_auth_state<S>(
-    state: &S,
-    cookie_jar: EncryptedCookieJar,
-    project: &ProjectName,
-) -> (EncryptedCookieJar, Result<(AuthState, time::Duration), RefreshAuthStateError<S::Error>>)
+pub async fn try_refresh_auth_state<S>(state: &S, cookie_jar: EncryptedCookieJar, project: &ProjectName) -> TryRefreshAuthStateResult<S::Error>
 where
     S: AuthSettingProvider + HttpClient,
 {
