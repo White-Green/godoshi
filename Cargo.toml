@@ -14,9 +14,11 @@ taplo-cli = "0.10.0"
 axum = { default-features = false, features = [
   "json",
   "macros",
+  "original-uri",
   "query",
 ], version = "0.8.9" }
 axum-extra = { default-features = false, features = [
+  "cookie-key-expansion",
   "cookie-private",
 ], version = "0.12.6" }
 futures = "0.3.34"
@@ -27,7 +29,7 @@ serde = { features = ["derive"], version = "1.0.229" }
 serde_json = "1.0.151"
 smol_str = { features = ["serde"], version = "0.3.6" }
 thiserror = "2.0.21"
-time = "0.3.55"
+time = { features = ["wasm-bindgen"], version = "0.3.55" }
 tower = "0.5.3"
 tower-service = "0.3.3"
 wasm-bindgen = "0.2"

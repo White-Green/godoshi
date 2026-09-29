@@ -108,9 +108,11 @@ fn router(env: Env) -> Router {
     let project_layer = axum::middleware::from_fn_with_state(state.clone(), project::middleware::<AppState>);
     Router::new()
         .nest("/auth", auth::route())
-        .nest(
+        .nest_service(
             "/{project}",
-            app::route().layer(tower::builder::ServiceBuilder::new().layer(auth_layer).layer(project_layer)),
+            app::route()
+                .fallback(async || StatusCode::NOT_FOUND)
+                .layer(tower::builder::ServiceBuilder::new().layer(project_layer).layer(auth_layer)),
         )
         .route("/", get(root))
         .route("/container", get(container_handler))

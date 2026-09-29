@@ -2,7 +2,7 @@ use crate::HOST;
 use crate::auth::{AuthState, set_auth_state};
 use crate::encrypted_cookie::{EncryptedCookieJar, EncryptedCookieKeyProvider};
 use crate::http::{HttpClient, OAuthHttpClient};
-use crate::project::{ProjectManager, ProjectName};
+use crate::project::ProjectName;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{Response, StatusCode};
@@ -28,7 +28,7 @@ pub trait AuthSettingProvider {
 
 pub fn route<S>() -> Router<S>
 where
-    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + ProjectManager + AuthSettingProvider + HttpClient,
+    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + AuthSettingProvider + HttpClient,
 {
     Router::new()
         .route("/", axum::routing::get(auth::<S>))
@@ -62,6 +62,7 @@ fn auth_client<P: AuthSettingProvider>(
 }
 
 const AUTH_FLOW_STATE_COOKIE_NAME: &str = "godoshi_auth_flow_state";
+const AUTH_FLOW_STATE_COOKIE_PATH: &str = "/auth/discord/callback";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AuthFlowState {
@@ -81,16 +82,22 @@ struct AuthParam {
     redirect: SmolStr,
 }
 
+fn project_redirect(project: &ProjectName, redirect: &str) -> Option<SmolStr> {
+    if project.as_ref().is_empty() || redirect.chars().any(|c| c.is_ascii_control()) {
+        return None;
+    }
+    let path = redirect.split(['?', '#']).next()?;
+    let suffix = path.strip_prefix('/')?.strip_prefix(project.as_ref())?;
+    // Browsers recognize percent-encoded dots in parent path segments too.
+    let path = path.to_ascii_lowercase().replace("%2e", ".");
+    ((suffix.is_empty() || suffix.starts_with('/')) && !path.contains("..")).then(|| redirect.into())
+}
+
 async fn auth<S>(State(state): State<S>, cookie_jar: EncryptedCookieJar, Query(AuthParam { project, redirect }): Query<AuthParam>) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + ProjectManager + AuthSettingProvider,
+    S: EncryptedCookieKeyProvider + AuthSettingProvider,
 {
-    if let Some(suffix) = redirect.strip_prefix('/')
-        && let Some(suffix) = suffix.strip_prefix(project.as_ref())
-        && (suffix.is_empty() || suffix.starts_with('/'))
-        && state.project_exists(&project)
-    {
-    } else {
+    let Some(redirect) = project_redirect(&project, &redirect) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
 
@@ -112,7 +119,7 @@ where
         Cookie::build((AUTH_FLOW_STATE_COOKIE_NAME, serde_json::to_string(&auth_flow_state).unwrap()))
             .http_only(true)
             .secure(true)
-            .path("/auth/discord/callback")
+            .path(AUTH_FLOW_STATE_COOKIE_PATH)
             .max_age(time::Duration::seconds(600))
             .build(),
     );
@@ -139,7 +146,7 @@ where
     S: EncryptedCookieKeyProvider + AuthSettingProvider + HttpClient,
 {
     let auth_flow_state_cookie = cookie_jar.get(AUTH_FLOW_STATE_COOKIE_NAME);
-    let cookie_jar = cookie_jar.add(Cookie::build(AUTH_FLOW_STATE_COOKIE_NAME).max_age(time::Duration::seconds(0)));
+    let cookie_jar = cookie_jar.remove(Cookie::build(AUTH_FLOW_STATE_COOKIE_NAME).path(AUTH_FLOW_STATE_COOKIE_PATH));
     let AuthFlowState {
         project,
         redirect,
@@ -220,11 +227,13 @@ where
     }
 
     return Ok(AuthState {
-        user_id: me_response.username,
+        user_id: me_response.id,
+        username: me_response.username,
     });
 
     #[derive(Deserialize)]
     struct MeResponse {
+        id: SmolStr,
         username: SmolStr,
         #[serde(default)]
         bot: bool,
@@ -259,7 +268,7 @@ pub async fn try_refresh_auth_state<S>(
     state: &S,
     cookie_jar: EncryptedCookieJar,
     project: &ProjectName,
-) -> (EncryptedCookieJar, Result<AuthState, RefreshAuthStateError<S::Error>>)
+) -> (EncryptedCookieJar, Result<(AuthState, time::Duration), RefreshAuthStateError<S::Error>>)
 where
     S: AuthSettingProvider + HttpClient,
 {
@@ -293,7 +302,8 @@ where
         Err(err) => return (cookie_jar, Err(err.into())),
     };
 
-    (cookie_jar, Ok(auth_state))
+    let expires_in = time::Duration::seconds(token.expires_in().map_or(3600, |duration| duration.as_secs() as i64));
+    (cookie_jar, Ok((auth_state, expires_in)))
 }
 
 const DISCORD_AUTH_STATE_COOKIE_NAME: &str = "godoshi_discord_auth_state";
@@ -311,6 +321,7 @@ fn set_discord_auth_state(cookie_jar: EncryptedCookieJar, project: &ProjectName,
         ))
         .http_only(true)
         .secure(true)
+        .path(format!("/{project}"))
         .max_age(time::Duration::days(30))
         .build(),
     )

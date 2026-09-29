@@ -7,7 +7,7 @@ pub struct EncryptedCookieKey(Key);
 
 impl EncryptedCookieKey {
     pub fn from_bytes(key: &[u8]) -> Self {
-        Self(Key::from(key))
+        EncryptedCookieKey(Key::derive_from(key))
     }
 }
 
