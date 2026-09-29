@@ -9,7 +9,7 @@ use axum::http::{Response, StatusCode};
 use axum::routing::get;
 use futures::TryStreamExt;
 use tower_service::Service;
-use worker::{Context, Env, HttpRequest, MessageBatch, Method, Request, console_log, event};
+use worker::{Context, DurableObject, Env, HttpRequest, MessageBatch, Method, Request, State, console_log, durable_object, event};
 
 mod app;
 mod auth;
@@ -19,35 +19,36 @@ mod project;
 
 const HOST: &str = "godoshi.white-green.net";
 
-// #[durable_object]
-// pub struct MyContainer {
-//     state: State,
-//     env: Env,
-// }
-//
-// impl DurableObject for MyContainer {
-//     fn new(state: State, env: Env) -> Self {
-//         Self { state, env }
-//     }
-//
-//     async fn fetch(&self, _req: Request) -> Result<Response> {
-//         todo!()
-//         // if let Some(container) = self.state.container() {
-//         //     if let Ok(binding) = self.state.exports().get("OutboundHandler") {
-//         //         let outbound_fetcher = Fetcher::unchecked_from_js(binding);
-//         //         let _ = container.intercept_all_outbound_http(&outbound_fetcher).await;
-//         //     }
-//         //     if !container.running() {
-//         //         container.start(None)?;
-//         //     }
-//         //     let port = container.get_tcp_port(8080)?;
-//         //     let res = port.fetch_request(req).await?;
-//         //     Response::try_from(res)
-//         // } else {
-//         //     Response::ok("Hello from Container Durable Object!")
-//         // }
-//     }
-// }
+#[durable_object]
+#[allow(unused)]
+pub struct MyContainer {
+    state: State,
+    env: Env,
+}
+
+impl DurableObject for MyContainer {
+    fn new(state: State, env: Env) -> Self {
+        Self { state, env }
+    }
+
+    async fn fetch(&self, _req: Request) -> Result<worker::Response, worker::Error> {
+        todo!()
+        // if let Some(container) = self.state.container() {
+        //     if let Ok(binding) = self.state.exports().get("OutboundHandler") {
+        //         let outbound_fetcher = Fetcher::unchecked_from_js(binding);
+        //         let _ = container.intercept_all_outbound_http(&outbound_fetcher).await;
+        //     }
+        //     if !container.running() {
+        //         container.start(None)?;
+        //     }
+        //     let port = container.get_tcp_port(8080)?;
+        //     let res = port.fetch_request(req).await?;
+        //     Response::try_from(res)
+        // } else {
+        //     Response::ok("Hello from Container Durable Object!")
+        // }
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
