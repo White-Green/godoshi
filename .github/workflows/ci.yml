@@ -210,6 +210,63 @@ jobs:
         env:
           PROPTEST_CASES: 4096
 
+  worker-test:
+    name: Worker Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: rust-toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: nightly
+          components: rust-src
+          targets: wasm32-unknown-unknown
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
+
+      - name: Fetch Cargo dependencies
+        run: cargo fetch --locked
+
+      - name: Cache Rust target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ github.job }}-target-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-{1}-target-{2}-', runner.os, github.job, steps.rust-toolchain.outputs.cachekey) || '' }}
+
+      - name: Install worker-build
+        run: cargo install worker-build --git https://github.com/White-Green/workers-rs --branch codegen --locked
+
+      - name: Install Node.js dependencies
+        run: npm ci
+
+      - name: Test Worker
+        run: npm run test:worker
+
   worker-build:
     name: Worker Build
     runs-on: ubuntu-latest
