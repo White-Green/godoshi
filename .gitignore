@@ -4,9 +4,12 @@
 !/infrastructure
 !/migrations
 !/src
+!/tests
 !/.gitignore
 !/Cargo.lock
 !/Cargo.toml
+!/package.json
+!/package-lock.json
 !/rustfmt.toml
 !/taplo.toml
 !/wrangler.toml

@@ -1,3 +1,4 @@
+use crate::config::GenericConfigProvider;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{Request, Response};
@@ -6,9 +7,14 @@ use axum::response::IntoResponse;
 use oauth2::http::StatusCode;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt;
+use std::fmt::{Debug, Display};
+use worker::D1Database;
 
-#[derive(Clone, Serialize)]
+#[cfg(feature = "worker-tests")]
+pub mod tests;
+
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct ProjectName(SmolStr);
 
@@ -31,13 +37,13 @@ impl<'de> Deserialize<'de> for ProjectName {
 }
 
 impl Debug for ProjectName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Debug::fmt(&self.0, f)
     }
 }
 
 impl Display for ProjectName {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.0, f)
     }
 }
@@ -54,8 +60,29 @@ impl PartialEq<str> for ProjectName {
     }
 }
 
-pub trait ProjectManager {
-    fn project_exists(&self, project: &ProjectName) -> bool;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProjectId(u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectState {
+    pub id: ProjectId,
+    pub name: ProjectName,
+}
+
+async fn find(db: &D1Database, name: &ProjectName) -> Option<ProjectId> {
+    let query = worker::query!(db, "select id from project where name = ?", name.as_ref()).unwrap();
+    let results = query.all().await.unwrap().results::<QueryResult>().unwrap();
+    return match results.as_slice() {
+        [] => None,
+        [result] => Some(result.id),
+        _ => unreachable!("Multiple projects with the same name"),
+    };
+
+    #[derive(Deserialize)]
+    struct QueryResult {
+        id: ProjectId,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,13 +98,13 @@ pub async fn middleware<S>(
     next: Next,
 ) -> Response<Body>
 where
-    S: ProjectManager,
+    S: GenericConfigProvider,
 {
-    if !state.project_exists(&project) {
+    let Some(id) = find(&state.db(), &project).await else {
         tracing::info!(%project, "Project not found");
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     tracing::debug!(%project, "Project resolved");
-    request.extensions_mut().insert(project);
+    request.extensions_mut().insert(ProjectState { id, name: project });
     next.run(request).await
 }

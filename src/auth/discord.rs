@@ -1,8 +1,10 @@
-use crate::auth::{AuthState, set_auth_state};
-use crate::config::BaseUrlProvider;
+use crate::auth::set_auth_state;
+use crate::config::GenericConfigProvider;
 use crate::encrypted_cookie::{EncryptedCookieJar, EncryptedCookieKeyProvider};
 use crate::http::{HttpClient, OAuthHttpClient};
 use crate::project::ProjectName;
+use crate::user;
+use crate::user::UserId;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{Response, StatusCode};
@@ -29,14 +31,14 @@ pub trait AuthSettingProvider {
 
 pub fn route<S>() -> Router<S>
 where
-    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + AuthSettingProvider + BaseUrlProvider + HttpClient,
+    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + AuthSettingProvider + GenericConfigProvider + HttpClient,
 {
     Router::new()
         .route("/", axum::routing::get(auth::<S>))
         .route("/callback", axum::routing::get(callback::<S>))
 }
 
-fn auth_client<P: AuthSettingProvider + BaseUrlProvider>(
+fn auth_client<P: AuthSettingProvider + GenericConfigProvider>(
     provider: &P,
 ) -> Client<
     BasicErrorResponse,
@@ -97,7 +99,7 @@ fn project_redirect(project: &ProjectName, redirect: &str) -> Option<SmolStr> {
 #[tracing::instrument(name = "discord_auth", skip_all, fields(%project))]
 async fn auth<S>(State(state): State<S>, cookie_jar: EncryptedCookieJar, Query(AuthParam { project, redirect }): Query<AuthParam>) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + AuthSettingProvider + BaseUrlProvider,
+    S: EncryptedCookieKeyProvider + AuthSettingProvider + GenericConfigProvider,
 {
     let Some(redirect) = project_redirect(&project, &redirect) else {
         tracing::warn!(reason = "invalid_redirect", "Discord login rejected");
@@ -148,7 +150,7 @@ async fn callback<S>(
     }): Query<CallbackParam>,
 ) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + AuthSettingProvider + BaseUrlProvider + HttpClient,
+    S: EncryptedCookieKeyProvider + AuthSettingProvider + GenericConfigProvider + HttpClient,
 {
     let auth_flow_state_cookie = cookie_jar.get(AUTH_FLOW_STATE_COOKIE_NAME);
     let cookie_jar = cookie_jar.remove(Cookie::build(AUTH_FLOW_STATE_COOKIE_NAME).path(AUTH_FLOW_STATE_COOKIE_PATH));
@@ -186,7 +188,7 @@ where
     let access_token = token.access_token();
     assert_eq!(token.token_type(), &BasicTokenType::Bearer);
 
-    let auth_state = match construct_auth_state(&state, access_token).await {
+    let auth_state = match make_internal_user(&state, access_token).await {
         Ok(auth_state) => auth_state,
         Err(_) => return (cookie_jar, StatusCode::BAD_REQUEST).into_response(),
     };
@@ -234,12 +236,14 @@ enum ConstructAuthStateError<E> {
     DeserializeError(#[from] serde_json::Error),
     #[error("Bot account")]
     BotAccount,
+    #[error("User not found")]
+    UserNotFound,
 }
 
 #[tracing::instrument(name = "discord_profile", skip_all)]
-async fn construct_auth_state<S>(state: &S, access_token: &AccessToken) -> Result<AuthState, ConstructAuthStateError<S::Error>>
+async fn make_internal_user<S>(state: &S, access_token: &AccessToken) -> Result<UserId, ConstructAuthStateError<S::Error>>
 where
-    S: HttpClient,
+    S: GenericConfigProvider + HttpClient,
 {
     let request = http::request::Builder::new()
         .uri("https://discord.com/api/users/@me")
@@ -253,12 +257,14 @@ where
         .inspect_err(|_| tracing::warn!(reason = "http_error", "Discord profile lookup failed"))
         .map_err(ConstructAuthStateError::HttpError)?;
 
+    tracing::info!("{}", String::from_utf8_lossy(response.body().as_slice()));
+
     let me_response = serde_json::from_slice::<MeResponse>(response.body().as_slice()).inspect_err(|error| {
         tracing::warn!(
             status = response.status().as_u16(),
             reason = "invalid_response",
             category = ?error.classify(),
-            "Discord profile lookup failed"
+            "Discord profile lookup failed {error:?}"
         );
     })?;
     if me_response.bot {
@@ -266,10 +272,12 @@ where
         return Err(ConstructAuthStateError::BotAccount);
     }
 
-    return Ok(AuthState {
-        user_id: me_response.id,
-        username: me_response.username,
-    });
+    let db = state.db();
+    let Some(discord_user) = user::discord::find(&db, me_response.id, me_response.username).await else {
+        return Err(ConstructAuthStateError::UserNotFound);
+    };
+
+    return Ok(discord_user.id);
 
     #[derive(Deserialize)]
     struct MeResponse {
@@ -288,6 +296,8 @@ pub enum RefreshAuthStateError<E: Error + 'static> {
     DeserializeError(#[from] serde_json::Error),
     #[error("Bot account")]
     BotAccount,
+    #[error("User not found")]
+    UserNotFound,
     #[error("Refresh token not exists")]
     RefreshTokenNotExists,
     #[error(transparent)]
@@ -300,16 +310,17 @@ impl<E: Error + 'static> From<ConstructAuthStateError<E>> for RefreshAuthStateEr
             ConstructAuthStateError::HttpError(e) => RefreshAuthStateError::HttpError(e),
             ConstructAuthStateError::DeserializeError(e) => RefreshAuthStateError::DeserializeError(e),
             ConstructAuthStateError::BotAccount => RefreshAuthStateError::BotAccount,
+            ConstructAuthStateError::UserNotFound => RefreshAuthStateError::UserNotFound,
         }
     }
 }
 
-pub type TryRefreshAuthStateResult<E> = (EncryptedCookieJar, Result<(AuthState, time::Duration), RefreshAuthStateError<E>>);
+pub type TryRefreshAuthStateResult<E> = (EncryptedCookieJar, Result<(UserId, time::Duration), RefreshAuthStateError<E>>);
 
 #[tracing::instrument(name = "discord_refresh", skip_all, fields(%project))]
 pub async fn try_refresh_auth_state<S>(state: &S, cookie_jar: EncryptedCookieJar, project: &ProjectName) -> TryRefreshAuthStateResult<S::Error>
 where
-    S: AuthSettingProvider + BaseUrlProvider + HttpClient,
+    S: AuthSettingProvider + GenericConfigProvider + HttpClient,
 {
     let Some(DiscordAuthState { refresh_token }) = get_discord_auth_state(&cookie_jar, project) else {
         tracing::debug!("No refresh token available");
@@ -340,7 +351,7 @@ where
         cookie_jar
     };
 
-    let auth_state = match construct_auth_state(state, token.access_token()).await {
+    let auth_state = match make_internal_user(state, token.access_token()).await {
         Ok(auth_state) => auth_state,
         Err(err) => return (cookie_jar, Err(err.into())),
     };

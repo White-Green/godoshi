@@ -1,7 +1,8 @@
-use crate::config::BaseUrlProvider;
+use crate::config::GenericConfigProvider;
 use crate::encrypted_cookie::{EncryptedCookieJar, EncryptedCookieKeyProvider};
 use crate::http::HttpClient;
-use crate::project::ProjectName;
+use crate::project::{ProjectName, ProjectState};
+use crate::user::{UserId, UserPermissionSet};
 use axum::body::Body;
 use axum::extract::{OriginalUri, State};
 use axum::http::{Request, Response};
@@ -10,29 +11,30 @@ use axum::response::{IntoResponse, Redirect};
 use axum::{Extension, Router};
 use axum_extra::extract::cookie::Cookie;
 use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 use time::{Duration, OffsetDateTime};
 
 pub mod discord;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(feature = "worker-tests")]
+pub mod tests;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthState {
-    #[serde(rename = "uid")]
-    pub user_id: SmolStr,
-    pub username: SmolStr,
+    pub user_id: UserId,
+    pub project: ProjectState,
+    pub permission_set: UserPermissionSet,
 }
 
 #[derive(Serialize, Deserialize)]
 struct AuthStateCookie {
-    #[serde(flatten)]
-    auth_state: AuthState,
+    id: UserId,
     #[serde(rename = "exp")]
     expires_at: i64,
 }
 
 pub fn route<S>() -> Router<S>
 where
-    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + discord::AuthSettingProvider + BaseUrlProvider + HttpClient,
+    S: 'static + Clone + Send + Sync + EncryptedCookieKeyProvider + discord::AuthSettingProvider + GenericConfigProvider + HttpClient,
 {
     Router::new().nest("/discord", discord::route::<S>())
 }
@@ -43,9 +45,9 @@ fn auth_state_cookie_name(project: &ProjectName) -> String {
     format!("{AUTH_STATE_COOKIE_NAME}_{project}")
 }
 
-fn set_auth_state(cookie_jar: EncryptedCookieJar, project: &ProjectName, auth_state: AuthState, age: Duration) -> EncryptedCookieJar {
+fn set_auth_state(cookie_jar: EncryptedCookieJar, project: &ProjectName, authenticated_user_id: UserId, age: Duration) -> EncryptedCookieJar {
     let auth_state = AuthStateCookie {
-        auth_state,
+        id: authenticated_user_id,
         expires_at: OffsetDateTime::now_utc().unix_timestamp().saturating_add(age.whole_seconds()),
     };
     cookie_jar.add(
@@ -58,7 +60,7 @@ fn set_auth_state(cookie_jar: EncryptedCookieJar, project: &ProjectName, auth_st
     )
 }
 
-fn get_auth_state(cookie_jar: &EncryptedCookieJar, project: &ProjectName) -> Option<AuthState> {
+fn get_authenticated_user_id(cookie_jar: &EncryptedCookieJar, project: &ProjectName) -> Option<UserId> {
     let cookie = cookie_jar.get(&auth_state_cookie_name(project))?;
     let auth_state: AuthStateCookie = serde_json::from_str(cookie.value())
         .inspect_err(|_| tracing::warn!(%project, "Invalid session cookie"))
@@ -67,7 +69,39 @@ fn get_auth_state(cookie_jar: &EncryptedCookieJar, project: &ProjectName) -> Opt
         tracing::debug!(%project, "Session expired");
         return None;
     }
-    Some(auth_state.auth_state)
+    Some(auth_state.id)
+}
+
+async fn construct_auth_state<S>(state: &S, user_id: UserId, project: ProjectState) -> AuthState
+where
+    S: GenericConfigProvider,
+{
+    let db = state.db();
+    let query = worker::query!(
+        &db,
+        "select permission_set from permission where project_id = ? and user_id = ?",
+        project.id,
+        user_id
+    )
+    .unwrap();
+    let result = query.all().await.unwrap().results::<QueryResult>().unwrap();
+
+    let permission_set = match result.as_slice() {
+        [] => UserPermissionSet::empty(),
+        &[QueryResult { permission_set }] => permission_set,
+        _ => unreachable!(),
+    };
+
+    return AuthState {
+        user_id,
+        project,
+        permission_set,
+    };
+
+    #[derive(Debug, Deserialize)]
+    struct QueryResult {
+        permission_set: UserPermissionSet,
+    }
 }
 
 #[worker::send]
@@ -75,23 +109,26 @@ pub async fn middleware<S>(
     State(state): State<S>,
     OriginalUri(uri): OriginalUri,
     mut cookie_jar: EncryptedCookieJar,
-    Extension(project): Extension<ProjectName>,
+    Extension(project_state): Extension<ProjectState>,
     mut request: Request<Body>,
     next: Next,
 ) -> Response<Body>
 where
-    S: EncryptedCookieKeyProvider + discord::AuthSettingProvider + BaseUrlProvider + HttpClient,
+    S: EncryptedCookieKeyProvider + discord::AuthSettingProvider + GenericConfigProvider + HttpClient,
 {
-    if let Some(auth_state) = get_auth_state(&cookie_jar, &project) {
+    let project = project_state.name.clone();
+    if let Some(user_id) = get_authenticated_user_id(&cookie_jar, &project) {
         tracing::debug!(%project, "Authenticated using session cookie");
+        let auth_state = construct_auth_state(&state, user_id, project_state).await;
         request.extensions_mut().insert(auth_state);
     } else {
         let (new_cookie_jar, result) = discord::try_refresh_auth_state(&state, cookie_jar, &project).await;
 
         cookie_jar = match result {
-            Ok((auth_state, expires_in)) => {
-                request.extensions_mut().insert(auth_state.clone());
-                set_auth_state(new_cookie_jar, &project, auth_state, expires_in)
+            Ok((user_id, expires_in)) => {
+                let auth_state = construct_auth_state(&state, user_id, project_state).await;
+                request.extensions_mut().insert(auth_state);
+                set_auth_state(new_cookie_jar, &project, user_id, expires_in)
             }
             Err(_) => {
                 tracing::debug!(%project, "Redirecting unauthenticated request to Discord login");

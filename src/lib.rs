@@ -1,8 +1,7 @@
 use crate::auth::discord::AuthSettingProvider;
-use crate::config::BaseUrlProvider;
+use crate::config::GenericConfigProvider;
 use crate::encrypted_cookie::{EncryptedCookieKey, EncryptedCookieKeyProvider};
 use crate::http::HttpClient;
-use crate::project::{ProjectManager, ProjectName};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State as AxumState;
@@ -10,7 +9,7 @@ use axum::http::{Response, StatusCode};
 use axum::routing::get;
 use futures::TryStreamExt;
 use tower_service::Service;
-use worker::{Context, DurableObject, Env, HttpRequest, MessageBatch, MessageExt, Method, Request, State, durable_object, event};
+use worker::{Context, D1Database, DurableObject, Env, HttpRequest, MessageBatch, MessageExt, Method, Request, State, durable_object, event};
 
 mod app;
 mod auth;
@@ -18,6 +17,12 @@ mod config;
 mod encrypted_cookie;
 mod http;
 mod project;
+mod user;
+
+#[cfg(feature = "worker-tests")]
+mod test_db;
+#[cfg(feature = "worker-tests")]
+mod worker_tests;
 
 #[event(start)]
 fn start() {
@@ -80,12 +85,6 @@ impl EncryptedCookieKeyProvider for AppState {
     }
 }
 
-impl ProjectManager for AppState {
-    fn project_exists(&self, project: &ProjectName) -> bool {
-        project == "test"
-    }
-}
-
 impl AuthSettingProvider for AppState {
     fn client_id(&self) -> String {
         self.env
@@ -104,13 +103,17 @@ impl AuthSettingProvider for AppState {
     }
 }
 
-impl BaseUrlProvider for AppState {
+impl GenericConfigProvider for AppState {
     fn base_url(&self) -> String {
         self.env
             .var("BASE_URL")
             .inspect_err(|_| tracing::error!(binding = "BASE_URL", "Required configuration unavailable"))
             .expect("BASE_URL must be configured")
             .to_string()
+    }
+
+    fn db(&self) -> D1Database {
+        self.env.d1("DB").unwrap()
     }
 }
 
@@ -181,6 +184,11 @@ fn router(env: Env) -> Router {
 #[event(fetch)]
 #[tracing::instrument(name = "http_request", skip_all, fields(method = %req.method(), path = req.uri().path()), err)]
 async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum::http::Response<axum::body::Body>> {
+    #[cfg(feature = "worker-tests")]
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/test" {
+        return Ok(worker_tests::run(env).await);
+    }
+
     let started = time::OffsetDateTime::now_utc();
     let response = router(env).call(req).await?;
     let status = response.status().as_u16();

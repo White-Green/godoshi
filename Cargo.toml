@@ -7,6 +7,9 @@ version = "0.1.0"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+worker-tests = []
+
 [package.metadata.cargo-binaries]
 taplo-cli = "0.10.0"
 
@@ -21,6 +24,7 @@ axum-extra = { default-features = false, features = [
   "cookie-key-expansion",
   "cookie-private",
 ], version = "0.12.6" }
+bitflags = "2.13.2"
 futures = "0.3.34"
 oauth2 = { default-features = false, features = [
   "timing-resistant-secret-traits",
@@ -40,6 +44,7 @@ tracing-subscriber = { default-features = false, features = [
 tracing-web = "0.1.3"
 wasm-bindgen = "0.2"
 worker = { branch = "codegen", features = [
+  "d1",
   'axum',
   'http',
   'queue',

@@ -1,0 +1,11 @@
+{
+  "name": "godoshi-worker-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:worker": "node tests/run.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "5.20260926.1-alpha"
+  }
+}
