@@ -131,8 +131,7 @@ impl HttpClient for AppState {
         let request = axum::http::Request::<Body>::from_parts(parts, Body::from(body));
         let request = request
             .try_into()
-            .inspect_err(|_| tracing::error!(stage = "request_conversion", "External request failed"))
-            .map_err(std::io::Error::other)?;
+            .expect("Application-generated HTTP requests must be valid Workers requests");
         let response = worker::Fetch::Request(request)
             .send()
             .await
@@ -231,31 +230,31 @@ pub async fn root() -> &'static str {
 }
 
 #[worker::send]
-async fn container_handler(AxumState(state): AxumState<AppState>) -> std::result::Result<String, (StatusCode, String)> {
+async fn container_handler(AxumState(state): AxumState<AppState>) -> std::result::Result<Response<Body>, StatusCode> {
     fetch_container(&state.env, "http://container/").await
 }
 
 #[worker::send]
-async fn container_outbound_handler(AxumState(state): AxumState<AppState>) -> std::result::Result<String, (StatusCode, String)> {
+async fn container_outbound_handler(AxumState(state): AxumState<AppState>) -> std::result::Result<Response<Body>, StatusCode> {
     fetch_container(&state.env, "http://container/outbound").await
 }
 
 #[tracing::instrument(name = "container_request", skip_all)]
-async fn fetch_container(env: &Env, url: &str) -> std::result::Result<String, (StatusCode, String)> {
-    let error_response = |stage: &'static str, error: worker::Error| {
-        tracing::error!(stage, "Container request failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-    };
-    let namespace = env.durable_object("CONTAINER").map_err(|e| error_response("binding", e))?;
+async fn fetch_container(env: &Env, url: &str) -> std::result::Result<Response<Body>, StatusCode> {
+    let namespace = env
+        .durable_object("CONTAINER")
+        .expect("CONTAINER must be configured as a Durable Object namespace");
     let stub = namespace
         .id_from_name("default")
-        .map_err(|e| error_response("object_id", e))?
+        .expect("The fixed container name must produce a valid object ID")
         .get_stub()
-        .map_err(|e| error_response("stub", e))?;
-    let req = Request::new(url, Method::Get).map_err(|e| error_response("request_creation", e))?;
-    let mut response = stub.fetch_with_request(req).await.map_err(|e| error_response("send", e))?;
+        .expect("An object ID created by this namespace must produce a stub");
+    let req = Request::new(url, Method::Get).expect("The application-defined container URL must be valid");
+    let response = stub.fetch_with_request(req).await.map_err(|_| {
+        tracing::error!(stage = "send", "Container request failed");
+        StatusCode::BAD_GATEWAY
+    })?;
     let status = response.status_code();
-    let text = response.text().await.map_err(|e| error_response("response_body", e))?;
     if status >= 500 {
         tracing::error!(status, "Container request completed");
     } else if status >= 400 {
@@ -263,5 +262,5 @@ async fn fetch_container(env: &Env, url: &str) -> std::result::Result<String, (S
     } else {
         tracing::info!(status, "Container request completed");
     }
-    Ok(text)
+    Ok(response.into())
 }

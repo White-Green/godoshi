@@ -70,14 +70,18 @@ pub struct ProjectState {
     pub name: ProjectName,
 }
 
-async fn find(db: &D1Database, name: &ProjectName) -> Option<ProjectId> {
-    let query = worker::query!(db, "select id from project where name = ?", name.as_ref()).unwrap();
-    let results = query.all().await.unwrap().results::<QueryResult>().unwrap();
-    return match results.as_slice() {
+async fn find(db: &D1Database, name: &ProjectName) -> worker::Result<Option<ProjectId>> {
+    let query = worker::query!(db, "select id from project where name = ?", name.as_ref()).expect("Project query parameters must be valid D1 values");
+    let results = query
+        .all()
+        .await?
+        .results::<QueryResult>()
+        .expect("Project query results must match the schema");
+    return Ok(match results.as_slice() {
         [] => None,
         [result] => Some(result.id),
         _ => unreachable!("Multiple projects with the same name"),
-    };
+    });
 
     #[derive(Deserialize)]
     struct QueryResult {
@@ -100,7 +104,14 @@ pub async fn middleware<S>(
 where
     S: GenericConfigProvider,
 {
-    let Some(id) = find(&state.db(), &project).await else {
+    let id = match find(&state.db(), &project).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(%project, error = %e, "Project database lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(id) = id else {
         tracing::info!(%project, "Project not found");
         return StatusCode::NOT_FOUND.into_response();
     };

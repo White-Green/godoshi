@@ -135,7 +135,8 @@ where
 
 #[derive(Debug, Deserialize)]
 struct CallbackParam {
-    code: AuthorizationCode,
+    code: Option<AuthorizationCode>,
+    error: Option<SmolStr>,
     state: CsrfToken,
 }
 
@@ -146,6 +147,7 @@ async fn callback<S>(
     cookie_jar: EncryptedCookieJar,
     Query(CallbackParam {
         code: exchange_code,
+        error: authorization_error,
         state: csrf_token_from_callback,
     }): Query<CallbackParam>,
 ) -> Response<Body>
@@ -172,6 +174,12 @@ where
         tracing::warn!(reason = "csrf_mismatch", "Discord callback rejected");
         return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
     }
+    let exchange_code = match (exchange_code, authorization_error.as_deref()) {
+        (Some(code), None) if !code.secret().is_empty() => code,
+        (None, Some("access_denied")) => return (cookie_jar, StatusCode::FORBIDDEN).into_response(),
+        (None, Some("server_error" | "temporarily_unavailable")) => return (cookie_jar, StatusCode::BAD_GATEWAY).into_response(),
+        _ => return (cookie_jar, StatusCode::BAD_REQUEST).into_response(),
+    };
     let token = match auth_client(&state)
         .exchange_code(exchange_code)
         .set_pkce_verifier(pkce_verifier)
@@ -181,16 +189,19 @@ where
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(reason = token_error_reason(&error), "Discord authorization code exchange failed");
-            return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
+            return (cookie_jar, token_error_status(&error)).into_response();
         }
     };
 
     let access_token = token.access_token();
-    assert_eq!(token.token_type(), &BasicTokenType::Bearer);
+    if token.token_type() != &BasicTokenType::Bearer {
+        tracing::warn!(reason = "unsupported_token_type", "Discord token response rejected");
+        return (cookie_jar, StatusCode::BAD_GATEWAY).into_response();
+    }
 
     let auth_state = match make_internal_user(&state, access_token).await {
         Ok(auth_state) => auth_state,
-        Err(_) => return (cookie_jar, StatusCode::BAD_REQUEST).into_response(),
+        Err(error) => return (cookie_jar, error.status_code()).into_response(),
     };
 
     let expires_in = time::Duration::seconds(token.expires_in().map_or(3600, |duration| duration.as_secs() as i64));
@@ -228,16 +239,46 @@ fn token_error_reason<E: Error + 'static>(error: &RequestTokenError<E, BasicErro
     }
 }
 
+fn token_error_status<E: Error + 'static>(error: &RequestTokenError<E, BasicErrorResponse>) -> StatusCode {
+    match error {
+        RequestTokenError::ServerResponse(response) => match response.error() {
+            BasicErrorResponseType::InvalidGrant => StatusCode::BAD_REQUEST,
+            // The application constructs these parameters and supplies the client credentials.
+            BasicErrorResponseType::InvalidClient
+            | BasicErrorResponseType::InvalidRequest
+            | BasicErrorResponseType::InvalidScope
+            | BasicErrorResponseType::UnauthorizedClient
+            | BasicErrorResponseType::UnsupportedGrantType => StatusCode::INTERNAL_SERVER_ERROR,
+            BasicErrorResponseType::Extension(_) => StatusCode::BAD_GATEWAY,
+        },
+        RequestTokenError::Request(_) | RequestTokenError::Parse(..) | RequestTokenError::Other(_) => StatusCode::BAD_GATEWAY,
+    }
+}
+
 #[derive(Debug, Error)]
 enum ConstructAuthStateError<E> {
     #[error(transparent)]
     HttpError(E),
     #[error(transparent)]
     DeserializeError(#[from] serde_json::Error),
+    #[error("Discord profile returned HTTP {0}")]
+    HttpStatus(StatusCode),
+    #[error(transparent)]
+    DatabaseError(#[from] worker::Error),
     #[error("Bot account")]
     BotAccount,
     #[error("User not found")]
     UserNotFound,
+}
+
+impl<E> ConstructAuthStateError<E> {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::BotAccount | Self::UserNotFound => StatusCode::FORBIDDEN,
+            Self::HttpError(_) | Self::HttpStatus(_) | Self::DeserializeError(_) => StatusCode::BAD_GATEWAY,
+            Self::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 #[tracing::instrument(name = "discord_profile", skip_all)]
@@ -257,7 +298,10 @@ where
         .inspect_err(|_| tracing::warn!(reason = "http_error", "Discord profile lookup failed"))
         .map_err(ConstructAuthStateError::HttpError)?;
 
-    tracing::info!("{}", String::from_utf8_lossy(response.body().as_slice()));
+    if !response.status().is_success() {
+        tracing::warn!(status = response.status().as_u16(), "Discord profile lookup failed");
+        return Err(ConstructAuthStateError::HttpStatus(response.status()));
+    }
 
     let me_response = serde_json::from_slice::<MeResponse>(response.body().as_slice()).inspect_err(|error| {
         tracing::warn!(
@@ -273,7 +317,10 @@ where
     }
 
     let db = state.db();
-    let Some(discord_user) = user::discord::find(&db, me_response.id, me_response.username).await else {
+    let Some(discord_user) = user::discord::find(&db, me_response.id, me_response.username)
+        .await
+        .inspect_err(|_| tracing::error!("Discord user database lookup failed"))?
+    else {
         return Err(ConstructAuthStateError::UserNotFound);
     };
 
@@ -294,6 +341,12 @@ pub enum RefreshAuthStateError<E: Error + 'static> {
     HttpError(E),
     #[error(transparent)]
     DeserializeError(#[from] serde_json::Error),
+    #[error("Discord profile returned HTTP {0}")]
+    HttpStatus(StatusCode),
+    #[error(transparent)]
+    DatabaseError(worker::Error),
+    #[error("Unsupported Discord token type")]
+    UnsupportedTokenType,
     #[error("Bot account")]
     BotAccount,
     #[error("User not found")]
@@ -309,8 +362,26 @@ impl<E: Error + 'static> From<ConstructAuthStateError<E>> for RefreshAuthStateEr
         match value {
             ConstructAuthStateError::HttpError(e) => RefreshAuthStateError::HttpError(e),
             ConstructAuthStateError::DeserializeError(e) => RefreshAuthStateError::DeserializeError(e),
+            ConstructAuthStateError::HttpStatus(status) => RefreshAuthStateError::HttpStatus(status),
+            ConstructAuthStateError::DatabaseError(e) => RefreshAuthStateError::DatabaseError(e),
             ConstructAuthStateError::BotAccount => RefreshAuthStateError::BotAccount,
             ConstructAuthStateError::UserNotFound => RefreshAuthStateError::UserNotFound,
+        }
+    }
+}
+
+impl<E: Error + 'static> RefreshAuthStateError<E> {
+    // Only missing or expired/revoked credentials can be resolved by starting a new login.
+    pub fn status_code(&self) -> Option<StatusCode> {
+        match self {
+            Self::RefreshTokenNotExists => None,
+            Self::TokenExchangeError(RequestTokenError::ServerResponse(response)) if response.error() == &BasicErrorResponseType::InvalidGrant => {
+                None
+            }
+            Self::TokenExchangeError(error) => Some(token_error_status(error)),
+            Self::BotAccount | Self::UserNotFound => Some(StatusCode::FORBIDDEN),
+            Self::HttpError(_) | Self::HttpStatus(_) | Self::DeserializeError(_) | Self::UnsupportedTokenType => Some(StatusCode::BAD_GATEWAY),
+            Self::DatabaseError(_) => Some(StatusCode::INTERNAL_SERVER_ERROR),
         }
     }
 }
@@ -350,6 +421,10 @@ where
     } else {
         cookie_jar
     };
+
+    if token.token_type() != &BasicTokenType::Bearer {
+        return (cookie_jar, Err(RefreshAuthStateError::UnsupportedTokenType));
+    }
 
     let auth_state = match make_internal_user(state, token.access_token()).await {
         Ok(auth_state) => auth_state,

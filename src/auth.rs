@@ -5,7 +5,7 @@ use crate::project::{ProjectName, ProjectState};
 use crate::user::{UserId, UserPermissionSet};
 use axum::body::Body;
 use axum::extract::{OriginalUri, State};
-use axum::http::{Request, Response};
+use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect};
 use axum::{Extension, Router};
@@ -72,7 +72,7 @@ fn get_authenticated_user_id(cookie_jar: &EncryptedCookieJar, project: &ProjectN
     Some(auth_state.id)
 }
 
-async fn construct_auth_state<S>(state: &S, user_id: UserId, project: ProjectState) -> AuthState
+async fn construct_auth_state<S>(state: &S, user_id: UserId, project: ProjectState) -> Result<AuthState, StatusCode>
 where
     S: GenericConfigProvider,
 {
@@ -83,8 +83,16 @@ where
         project.id,
         user_id
     )
-    .unwrap();
-    let result = query.all().await.unwrap().results::<QueryResult>().unwrap();
+    .expect("Permission query parameters must be valid D1 values");
+    let result = query
+        .all()
+        .await
+        .map_err(|_| {
+            tracing::error!("User permissions database lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .results::<QueryResult>()
+        .expect("Permission query results must match the schema and permission bits");
 
     let permission_set = match result.as_slice() {
         [] => UserPermissionSet::empty(),
@@ -92,11 +100,11 @@ where
         _ => unreachable!(),
     };
 
-    return AuthState {
+    return Ok(AuthState {
         user_id,
         project,
         permission_set,
-    };
+    });
 
     #[derive(Debug, Deserialize)]
     struct QueryResult {
@@ -119,18 +127,27 @@ where
     let project = project_state.name.clone();
     if let Some(user_id) = get_authenticated_user_id(&cookie_jar, &project) {
         tracing::debug!(%project, "Authenticated using session cookie");
-        let auth_state = construct_auth_state(&state, user_id, project_state).await;
+        let auth_state = match construct_auth_state(&state, user_id, project_state).await {
+            Ok(auth_state) => auth_state,
+            Err(status) => return (cookie_jar, status).into_response(),
+        };
         request.extensions_mut().insert(auth_state);
     } else {
         let (new_cookie_jar, result) = discord::try_refresh_auth_state(&state, cookie_jar, &project).await;
 
         cookie_jar = match result {
             Ok((user_id, expires_in)) => {
-                let auth_state = construct_auth_state(&state, user_id, project_state).await;
+                let auth_state = match construct_auth_state(&state, user_id, project_state).await {
+                    Ok(auth_state) => auth_state,
+                    Err(status) => return (new_cookie_jar, status).into_response(),
+                };
                 request.extensions_mut().insert(auth_state);
                 set_auth_state(new_cookie_jar, &project, user_id, expires_in)
             }
-            Err(_) => {
+            Err(error) => {
+                if let Some(status) = error.status_code() {
+                    return (new_cookie_jar, status).into_response();
+                }
                 tracing::debug!(%project, "Redirecting unauthenticated request to Discord login");
                 let redirect = uri.path_and_query().map_or(uri.path(), |path| path.as_str());
                 let query = oauth2::url::form_urlencoded::Serializer::new(String::new())
