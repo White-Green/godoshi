@@ -13,7 +13,7 @@ pub struct DiscordUser {
     pub discord_username: SmolStr,
 }
 
-pub async fn find(db: &D1Database, discord_user_id: SmolStr, discord_username: SmolStr) -> Option<DiscordUser> {
+pub async fn find(db: &D1Database, discord_user_id: SmolStr, discord_username: SmolStr) -> worker::Result<Option<DiscordUser>> {
     loop {
         let query = worker::query!(
             &db,
@@ -21,23 +21,26 @@ pub async fn find(db: &D1Database, discord_user_id: SmolStr, discord_username: S
             discord_user_id,
             discord_username
         )
-        .unwrap();
-        let match_users = query.all().await.unwrap().results::<QueryResult>().unwrap();
+        .expect("Discord user query parameters must be valid D1 values");
+        let match_users = query
+            .all()
+            .await?
+            .results::<QueryResult>()
+            .expect("Discord user query results must match the schema");
         match match_users.len() {
             1 => {
                 let [found_user]: [_; 1] = match_users.try_into().unwrap();
                 if found_user.discord_id.as_ref() == Some(&discord_user_id) {
                     if found_user.username != discord_username {
                         worker::query!(&db, "update discord_user set username = ? where id = ?", discord_username, found_user.id,)
-                            .unwrap()
-                            .await
-                            .unwrap();
+                            .expect("Discord username update parameters must be valid D1 values")
+                            .await?;
                     }
-                    return Some(DiscordUser {
+                    return Ok(Some(DiscordUser {
                         id: found_user.id,
                         discord_user_id,
                         discord_username,
-                    });
+                    }));
                 } else if found_user.discord_id.is_none() && found_user.username == discord_username {
                     let result = worker::query!(
                         &db,
@@ -45,21 +48,26 @@ pub async fn find(db: &D1Database, discord_user_id: SmolStr, discord_username: S
                         discord_user_id,
                         found_user.id,
                     )
-                    .unwrap()
-                    .await
-                    .unwrap();
-                    if result.meta().unwrap().unwrap().rows_written == Some(1) {
-                        return Some(DiscordUser {
+                    .expect("Discord user link parameters must be valid D1 values")
+                    .await?;
+                    let rows_written = result
+                        .meta()
+                        .expect("D1 update metadata must have the expected types")
+                        .expect("A successful D1 update must return metadata")
+                        .rows_written
+                        .expect("D1 update metadata must include rows_written");
+                    if rows_written == 1 {
+                        return Ok(Some(DiscordUser {
                             id: found_user.id,
                             discord_user_id,
                             discord_username,
-                        });
+                        }));
                     }
                 } else {
-                    return None;
+                    return Ok(None);
                 }
             }
-            0 | 2.. => return None, // TODO: 2以上のほうはなんとかしたい...
+            0 | 2.. => return Ok(None), // TODO: 2以上のほうはなんとかしたい...
         }
     }
 

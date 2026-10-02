@@ -21,7 +21,7 @@ pub async fn run(context: &mut TestContext) {
 
 async fn missing_user(env: Env) {
     let db = env.d1("TEST_DB").unwrap();
-    assert!(find(&db, DISCORD_USER_ID, "alice".into()).await.is_none());
+    assert!(find(&db, DISCORD_USER_ID, "alice".into()).await.unwrap().is_none());
     assert!(rows(&db).await.is_empty());
 }
 
@@ -38,7 +38,10 @@ async fn existing_user(env: Env) {
     .await;
     let before = rows(&db).await;
 
-    let user = find(&db, DISCORD_USER_ID, "alice".into()).await.expect("existing user should be found");
+    let user = find(&db, DISCORD_USER_ID, "alice".into())
+        .await
+        .unwrap()
+        .expect("existing user should be found");
 
     assert_eq!(
         user,
@@ -90,9 +93,11 @@ async fn distinct_discord_ids(env: Env) {
 
     let alice = find(&db, DISCORD_USER_ID, "alice".into())
         .await
+        .unwrap()
         .expect("first Discord ID should be found");
     let bob = find(&db, OTHER_DISCORD_USER_ID, "bob".into())
         .await
+        .unwrap()
         .expect("second Discord ID should be found");
     assert_eq!(
         alice,
@@ -126,6 +131,7 @@ async fn renamed_user(env: Env) {
 
     let user = find(&db, DISCORD_USER_ID, "alice_new".into())
         .await
+        .unwrap()
         .expect("renamed user should be found by Discord ID");
 
     assert_eq!(
@@ -170,6 +176,7 @@ async fn link_unclaimed_user(env: Env) {
 
     let user = find(&db, DISCORD_USER_ID, "alice".into())
         .await
+        .unwrap()
         .expect("unclaimed username should be linked");
 
     assert_eq!(
@@ -210,7 +217,7 @@ async fn username_belongs_to_another_user(env: Env) {
     .await;
     let before = rows(&db).await;
 
-    assert!(find(&db, DISCORD_USER_ID, "alice".into()).await.is_none());
+    assert!(find(&db, DISCORD_USER_ID, "alice".into()).await.unwrap().is_none());
     assert_eq!(rows(&db).await, before);
 }
 
@@ -236,6 +243,6 @@ async fn ambiguous_users(env: Env) {
     .await;
     let before = rows(&db).await;
 
-    assert!(find(&db, DISCORD_USER_ID, "alice_new".into()).await.is_none());
+    assert!(find(&db, DISCORD_USER_ID, "alice_new".into()).await.unwrap().is_none());
     assert_eq!(rows(&db).await, before);
 }

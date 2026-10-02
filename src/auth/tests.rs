@@ -7,6 +7,8 @@ use crate::test_db::user::TestUser;
 use crate::test_db::{permission, project, user};
 use crate::user::UserPermissionSet;
 use crate::worker_tests::TestContext;
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 use worker::{D1Database, Env};
 
 pub async fn run(context: &mut TestContext) {
@@ -17,6 +19,7 @@ pub async fn run(context: &mut TestContext) {
     context.run(combined_permissions).await;
     context.run(permissions_are_scoped_to_user).await;
     context.run(permissions_are_scoped_to_project).await;
+    context.run(invalid_permission_result_panics).await;
 }
 
 struct TestConfig(Env);
@@ -56,7 +59,7 @@ async fn check_permission_set(env: Env, permissions: Option<UserPermissionSet>) 
     }
     let before = permission::rows(&db).await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await;
+    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
 
     assert_eq!(
         auth,
@@ -71,6 +74,30 @@ async fn check_permission_set(env: Env, permissions: Option<UserPermissionSet>) 
 
 async fn missing_permissions(env: Env) {
     check_permission_set(env, None).await;
+}
+
+async fn invalid_permission_result_panics(env: Env) {
+    let config = TestConfig(env);
+    let db = config.db();
+    let project = project_state(project::insert(&db, TestProject { id: 1, name: "alpha".into() }).await, "alpha");
+    let user_id = user::insert(&db, TestUser { id: 1 }).await;
+    permission::insert(
+        &db,
+        TestPermission {
+            project_id: 1,
+            user_id: 1,
+            permission_set: 0b100,
+        },
+    )
+    .await;
+
+    // The query succeeds, but its data violates the application's permission type.
+    let panic = AssertUnwindSafe(construct_auth_state(&config, user_id, project))
+        .catch_unwind()
+        .await
+        .expect_err("Invalid internal data must panic rather than return an HTTP error");
+    let message = panic.downcast_ref::<String>().expect("expect must include its diagnostic message");
+    assert!(message.contains("Permission query results must match the schema and permission bits"));
 }
 
 async fn empty_permissions(env: Env) {
@@ -105,7 +132,7 @@ async fn permissions_are_scoped_to_user(env: Env) {
     )
     .await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await;
+    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
     assert_eq!(
         auth,
         AuthState {
@@ -126,8 +153,8 @@ async fn permissions_are_scoped_to_user(env: Env) {
     .await;
     let before = permission::rows(&db).await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await;
-    let other_auth = construct_auth_state(&config, other_user_id, project.clone()).await;
+    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
+    let other_auth = construct_auth_state(&config, other_user_id, project.clone()).await.unwrap();
 
     assert_eq!(
         auth,
@@ -164,7 +191,7 @@ async fn permissions_are_scoped_to_project(env: Env) {
     )
     .await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await;
+    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
     assert_eq!(
         auth,
         AuthState {
@@ -185,8 +212,8 @@ async fn permissions_are_scoped_to_project(env: Env) {
     .await;
     let before = permission::rows(&db).await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await;
-    let other_auth = construct_auth_state(&config, user_id, other_project.clone()).await;
+    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
+    let other_auth = construct_auth_state(&config, user_id, other_project.clone()).await.unwrap();
 
     assert_eq!(
         auth,
