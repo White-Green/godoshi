@@ -264,7 +264,13 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
-      - name: Test Worker
+      - name: Install AWS CLI
+        run: |
+          python3 -m venv target/aws-cli
+          target/aws-cli/bin/pip install awscli==1.46.1
+          echo "AWS_CLI=$PWD/target/aws-cli/bin/aws" >> "$GITHUB_ENV"
+
+      - name: Test Worker and S3 CLI E2E
         run: npm run test:worker
 
   worker-build:
