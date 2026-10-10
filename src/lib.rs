@@ -4,17 +4,16 @@ use crate::encrypted_cookie::{EncryptedCookieKey, EncryptedCookieKeyProvider};
 use crate::http::HttpClient;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State as AxumState;
 use axum::http::{Response, StatusCode};
-use axum::routing::get;
 use futures::TryStreamExt;
 use s3s::{S3Error, S3ErrorCode};
 use tower_service::Service;
-use worker::{Context, D1Database, DurableObject, Env, HttpRequest, MessageBatch, MessageExt, Method, Request, State, durable_object, event};
+use worker::{Context, D1Database, Env, HttpRequest, MessageBatch, MessageExt, Method, Request, event};
 
 mod app;
 mod auth;
 mod config;
+mod container;
 mod encrypted_cookie;
 mod http;
 mod project;
@@ -36,38 +35,6 @@ fn start() {
         .with_max_level(tracing::Level::INFO)
         .with_writer(tracing_web::MakeWebConsoleWriter::new())
         .init();
-}
-
-#[durable_object]
-#[allow(unused)]
-pub struct MyContainer {
-    state: State,
-    env: Env,
-}
-
-impl DurableObject for MyContainer {
-    fn new(state: State, env: Env) -> Self {
-        Self { state, env }
-    }
-
-    async fn fetch(&self, _req: Request) -> Result<worker::Response, worker::Error> {
-        tracing::error!("Container Durable Object fetch is not implemented");
-        todo!()
-        // if let Some(container) = self.state.container() {
-        //     if let Ok(binding) = self.state.exports().get("OutboundHandler") {
-        //         let outbound_fetcher = Fetcher::unchecked_from_js(binding);
-        //         let _ = container.intercept_all_outbound_http(&outbound_fetcher).await;
-        //     }
-        //     if !container.running() {
-        //         container.start(None)?;
-        //     }
-        //     let port = container.get_tcp_port(8080)?;
-        //     let res = port.fetch_request(req).await?;
-        //     Response::try_from(res)
-        // } else {
-        //     Response::ok("Hello from Container Durable Object!")
-        // }
-    }
 }
 
 #[derive(Clone)]
@@ -176,9 +143,6 @@ fn router(env: Env) -> Router {
                 .fallback(async || StatusCode::NOT_FOUND)
                 .layer(tower::builder::ServiceBuilder::new().layer(project_layer).layer(auth_layer)),
         )
-        .route("/", get(root))
-        .route("/container", get(container_handler))
-        .route("/container/outbound", get(container_outbound_handler))
         .with_state(state)
 }
 
@@ -232,53 +196,21 @@ async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Resul
 
 #[event(queue)]
 #[tracing::instrument(name = "queue", skip_all, fields(queue = %message_batch.queue()), err)]
-async fn queue(message_batch: MessageBatch<()>, _env: Env, _ctx: Context) -> worker::Result<()> {
-    let messages = message_batch.messages()?;
-    let message_count = messages.len();
-    tracing::info!(message_count, "Processing queue batch");
-    for message in messages {
-        tracing::debug!(message_id = %message.id(), "Received message from queue");
+async fn queue(message_batch: MessageBatch<container::RunRequest>, env: Env, _ctx: Context) -> worker::Result<()> {
+    for message in message_batch.messages()? {
+        let message_id = message.id();
+        let name = format!("{}:{message_id}", message_batch.queue());
+        // The queue awaits completion; jobs must fit its 15-minute wall-time limit.
+        match container::run(&env, &name, message.body()).await {
+            Ok(()) => {
+                message.ack();
+                tracing::info!(message_id, "Build message acknowledged");
+            }
+            Err(error) => {
+                tracing::error!(message_id, %error, "Build failed; retrying queue message");
+                message.retry();
+            }
+        }
     }
-    tracing::info!(message_count, "Queue batch completed");
     Ok(())
-}
-
-pub async fn root() -> &'static str {
-    "Hello Axum!"
-}
-
-#[worker::send]
-async fn container_handler(AxumState(state): AxumState<AppState>) -> std::result::Result<Response<Body>, StatusCode> {
-    fetch_container(&state.env, "http://container/").await
-}
-
-#[worker::send]
-async fn container_outbound_handler(AxumState(state): AxumState<AppState>) -> std::result::Result<Response<Body>, StatusCode> {
-    fetch_container(&state.env, "http://container/outbound").await
-}
-
-#[tracing::instrument(name = "container_request", skip_all)]
-async fn fetch_container(env: &Env, url: &str) -> std::result::Result<Response<Body>, StatusCode> {
-    let namespace = env
-        .durable_object("CONTAINER")
-        .expect("CONTAINER must be configured as a Durable Object namespace");
-    let stub = namespace
-        .id_from_name("default")
-        .expect("The fixed container name must produce a valid object ID")
-        .get_stub()
-        .expect("An object ID created by this namespace must produce a stub");
-    let req = Request::new(url, Method::Get).expect("The application-defined container URL must be valid");
-    let response = stub.fetch_with_request(req).await.map_err(|_| {
-        tracing::error!(stage = "send", "Container request failed");
-        StatusCode::BAD_GATEWAY
-    })?;
-    let status = response.status_code();
-    if status >= 500 {
-        tracing::error!(status, "Container request completed");
-    } else if status >= 400 {
-        tracing::warn!(status, "Container request completed");
-    } else {
-        tracing::info!(status, "Container request completed");
-    }
-    Ok(response.into())
 }

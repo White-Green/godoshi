@@ -18,18 +18,18 @@ command = "worker-build --release"
 [vars]
 BASE_URL = "https://godoshi.white-green.net"
 
-#[[containers]]
-#class_name = "MyContainer"
-#image = "./container/Dockerfile"
-#max_instances = 10
-#
-#[[durable_objects.bindings]]
-#class_name = "MyContainer"
-#name = "CONTAINER"
-#
-#[[migrations]]
-#new_sqlite_classes = ["MyContainer"]
-#tag = "v1"
+[[containers]]
+class_name = "MyContainer"
+image = "./container/Dockerfile"
+max_instances = 10
+
+[[durable_objects.bindings]]
+class_name = "MyContainer"
+name = "CONTAINER"
+
+[[migrations]]
+new_sqlite_classes = ["MyContainer"]
+tag = "v1"
 
 [[d1_databases]]
 binding = "DB"
@@ -45,4 +45,6 @@ binding = "JOB_QUEUE"
 queue = "godoshi-job-queue"
 
 [[queues.consumers]]
+max_batch_size = 1
+max_concurrency = 10
 queue = "godoshi-job-queue"

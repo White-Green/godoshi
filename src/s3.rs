@@ -13,7 +13,7 @@ use s3s::dto::{
 };
 use s3s::service::S3ServiceBuilder;
 use s3s::{S3, S3Error, S3ErrorCode, S3Request, S3Response, S3Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use worker::send::{SendFuture, SendWrapper};
@@ -22,7 +22,7 @@ use worker::{Bucket, Conditional, D1Database, Data, HttpMetadata, Request};
 mod checksum;
 mod multipart;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct Params {
     pub project_id: u64,
 }
