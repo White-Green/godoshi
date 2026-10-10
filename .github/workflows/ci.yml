@@ -264,7 +264,7 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
-      - name: Test Worker
+      - name: Test Worker and S3 CLI E2E
         run: npm run test:worker
 
   worker-build:

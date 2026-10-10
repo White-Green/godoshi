@@ -14,6 +14,7 @@ worker-tests = []
 taplo-cli = "0.10.0"
 
 [dependencies]
+async-trait = "0.1.92"
 axum = { default-features = false, features = [
   "json",
   "macros",
@@ -24,11 +25,15 @@ axum-extra = { default-features = false, features = [
   "cookie-key-expansion",
   "cookie-private",
 ], version = "0.12.6" }
+base64 = "0.23.1"
 bitflags = "2.13.2"
+crc-fast = { default-features = false, version = "1.10.0" }
 futures = "0.3.34"
 oauth2 = { default-features = false, features = [
   "timing-resistant-secret-traits",
 ], version = "5.0.0" }
+percent-encoding = "2.3.2"
+s3s = "0.17.0"
 serde = { features = ["derive"], version = "1.0.229" }
 serde_json = "1.0.151"
 smol_str = { features = ["serde"], version = "0.3.6" }

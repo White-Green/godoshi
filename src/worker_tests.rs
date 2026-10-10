@@ -68,9 +68,11 @@ async fn reset_database(env: &Env) {
     // This binding exists only in the local test runner, independently of the application's DB.
     let db = env.d1("TEST_DB").unwrap();
     let scripts = [
-        "DROP TABLE IF EXISTS permission; DROP TABLE IF EXISTS discord_user; DROP TABLE IF EXISTS user; DROP TABLE IF EXISTS project;",
+        "DROP TABLE IF EXISTS s3_multipart_part; DROP TABLE IF EXISTS s3_multipart_upload;
+         DROP TABLE IF EXISTS permission; DROP TABLE IF EXISTS discord_user; DROP TABLE IF EXISTS user; DROP TABLE IF EXISTS project;",
         include_str!("../migrations/0001_initial.sql"),
         include_str!("../migrations/0002_setup.sql"),
+        include_str!("../migrations/0003_s3_multipart.sql"),
     ];
     let statements = scripts
         .into_iter()

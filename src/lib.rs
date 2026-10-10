@@ -8,6 +8,7 @@ use axum::extract::State as AxumState;
 use axum::http::{Response, StatusCode};
 use axum::routing::get;
 use futures::TryStreamExt;
+use s3s::{S3Error, S3ErrorCode};
 use tower_service::Service;
 use worker::{Context, D1Database, DurableObject, Env, HttpRequest, MessageBatch, MessageExt, Method, Request, State, durable_object, event};
 
@@ -17,6 +18,7 @@ mod config;
 mod encrypted_cookie;
 mod http;
 mod project;
+mod s3;
 mod user;
 
 #[cfg(feature = "worker-tests")]
@@ -201,15 +203,31 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum
 }
 
 #[event(fetch, entrypoint = "OutboundHandler")]
-#[tracing::instrument(name = "outbound_request", skip_all, fields(method = %req.method(), path = req.uri().path()), err)]
-async fn outbound_handler(req: HttpRequest, _env: Env, _ctx: Context) -> worker::Result<axum::http::Response<axum::body::Body>> {
-    tracing::info!("OutboundHandler intercepted request");
-    let body = format!("Hello from OutboundHandler! Intercepted request to: {}", req.uri());
-    Ok(axum::http::Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "text/plain")
-        .body(axum::body::Body::from(body))
-        .unwrap())
+#[tracing::instrument(name = "outbound_request", skip_all, fields(method = %req.method(), path = req.path()), err)]
+async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Result<worker::Response> {
+    let is_head = req.method() == Method::Head;
+    let result = async {
+        let params = ctx.props::<s3::Params>().map_err(|_| S3Error::new(S3ErrorCode::AccessDenied))?;
+        let r2 = env.bucket("BUCKET").map_err(|error| {
+            tracing::error!(%error, binding = "BUCKET", "Required binding unavailable");
+            S3Error::new(S3ErrorCode::InternalError)
+        })?;
+        let db = env.d1("DB").map_err(|error| {
+            tracing::error!(%error, binding = "DB", "Required binding unavailable");
+            S3Error::new(S3ErrorCode::InternalError)
+        })?;
+        s3::handle(req, r2, db, params).await
+    }
+    .await;
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => error.to_http_response().map_err(|error| worker::Error::RustError(error.to_string()))?,
+    };
+    let mut response = worker::Response::try_from(response)?.with_encode_body(worker::EncodeBody::Manual);
+    if is_head {
+        response = response.into_parts().0.empty();
+    }
+    Ok(response)
 }
 
 #[event(queue)]
