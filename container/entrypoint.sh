@@ -5,11 +5,11 @@ endpoint="${GODOSHI_S3_ENDPOINT:-http://s3.internal}"
 bootstrap_dir="$(mktemp -d)"
 trap 'rm -rf -- "$bootstrap_dir"' EXIT
 
-# OutboundHandler maps this key to projects/<project_id>/resources/resource/environment.closure_zstd.
-echo 'Downloading resource/environment.closure_zstd'
+# OutboundHandler maps this key to projects/<project_id>/resources/environment.closure_zstd.
+echo 'Downloading resources/environment.closure_zstd'
 aws --endpoint-url "${endpoint%/}" --no-sign-request \
     --cli-connect-timeout 30 --cli-read-timeout 300 \
-    s3 cp s3://resources/resource/environment.closure_zstd \
+    s3 cp s3://resources/environment.closure_zstd \
     "$bootstrap_dir/environment.closure_zstd" --only-show-errors
 
 # The object must be a zstd-compressed `nix-store --export` stream (including dependencies).

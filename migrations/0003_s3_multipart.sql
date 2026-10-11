@@ -1,6 +1,6 @@
 create table s3_multipart_upload
 (
-    -- The physical key includes projects/<project_id>/result/ and scopes the upload.
+    -- The physical key includes projects/<project_id>/results/ and scopes the upload.
     object_key   text not null,
     r2_upload_id text not null,
     -- checksum::Algorithm: 1 = CRC32, 2 = CRC64NVME, NULL = not specified at creation.
