@@ -10,6 +10,9 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
 const bucket = "godoshi-s3-cli-tests";
 const database = "00000000-0000-0000-0000-000000000003";
+const runId = "1791766923-12345678901234567890";
+const nextRunId = "1791766923-9876543210987654321";
+const resultKey = (project, key, run = runId) => `projects/${project}/results/${run}/${key}`;
 const wrangler = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
 
 // Only exposes fixed, trusted service bindings on loopback for the CLI tests.
@@ -132,7 +135,14 @@ export async function runS3CliTests(manifest) {
         { config: {
           name: "s3-cli-gateway", compatibilityDate: "2026-09-26",
           manifest: { mainModule: "gateway.js", modules: { "gateway.js": { type: "esm", contents: gateway } } },
-          env: { p1: binding({ project_id: 1 }), p2: binding({ project_id: 2 }), missing: binding(), bad: binding({ project_id: "../2" }) },
+          env: {
+            p1: binding({ project_id: 1, run_id: runId }),
+            p2: binding({ project_id: 2, run_id: runId }),
+            p1next: binding({ project_id: 1, run_id: nextRunId }),
+            missing: binding(),
+            missingRun: binding({ project_id: 1 }),
+            bad: binding({ project_id: "../2", run_id: runId }),
+          },
         } },
         { config: {
           name: "s3-api", compatibilityDate: "2026-09-26", manifest,
@@ -168,7 +178,7 @@ export async function runS3CliTests(manifest) {
 
     await test("aws s3 cp downloads scoped/escaped keys; empty GET/HEAD", async () => {
       for (const [project, key, expected] of [
-        ["p1", "input.txt", input], ["p2", "input.txt", other],
+        ["p1", "input.txt", input], ["p2", "input.txt", other], ["p1next", "input.txt", input],
         ["p1", "environment.closure_zstd", binary],
         ["p1", "nested/a+%2F.bin", binary],
       ]) {
@@ -214,22 +224,23 @@ export async function runS3CliTests(manifest) {
       const folders = await api("p1", "list-objects-v2", ["--bucket", "resources", "--prefix", "list/", "--delimiter", "/", "--start-after", "list/b.txt"]);
       assert.deepEqual(folders.CommonPrefixes, [{ Prefix: "list/dir/" }]);
     });
-    await test("aws s3 cp uploads, overwrites and isolates project results", async () => {
-      for (const [project, file] of [["p1", input], ["p2", other], ["p1", binary]]) {
+    await test("aws s3 cp uploads, overwrites and isolates project/run results", async () => {
+      for (const [project, file] of [["p1", input], ["p2", other], ["p1next", input], ["p1", binary]]) {
         await aws(project, ["s3", "cp", file, "s3://results/shared.bin", "--metadata", "origin=aws-cli", "--only-show-errors"]);
       }
       await aws("p1", ["s3", "cp", empty, "s3://results/empty", "--only-show-errors"]);
       await aws("p1", ["s3", "cp", binary, "s3://results/nested/日本 +%2F.bin", "--only-show-errors"]);
-      expectedObjects.set("projects/1/results/shared.bin", binary);
-      expectedObjects.set("projects/2/results/shared.bin", other);
-      expectedObjects.set("projects/1/results/empty", empty);
-      expectedObjects.set("projects/1/results/nested/日本 +%2F.bin", binary);
+      expectedObjects.set(resultKey(1, "shared.bin"), binary);
+      expectedObjects.set(resultKey(2, "shared.bin"), other);
+      expectedObjects.set(resultKey(1, "shared.bin", nextRunId), input);
+      expectedObjects.set(resultKey(1, "empty"), empty);
+      expectedObjects.set(resultKey(1, "nested/日本 +%2F.bin"), binary);
     });
     await test("aws s3 cp performs an automatic multipart upload", async () => {
       await aws("p1", ["s3", "cp", large, "s3://results/large.bin", "--only-show-errors"]);
-      expectedObjects.set("projects/1/results/large.bin", large);
+      expectedObjects.set(resultKey(1, "large.bin"), large);
     });
-    await test("explicit multipart upload, project isolation and completion", async () => {
+    await test("explicit multipart upload, project/run isolation and completion", async () => {
       const created = await api("p1", "create-multipart-upload", ["--bucket", "results", "--key", "multipart.bin", "--content-type", "application/custom"]);
       const { UploadId } = created;
       const stored = await db.prepare(`SELECT algorithm, typeof(algorithm) AS algorithm_type
@@ -241,6 +252,7 @@ export async function runS3CliTests(manifest) {
       }
       const upload = ["--bucket", "results", "--key", "multipart.bin", `--upload-id=${UploadId}`];
       await rejected("p2", ["s3api", "upload-part", ...upload, "--part-number", "1", "--body", firstPart], "NoSuchUpload");
+      await rejected("p1next", ["s3api", "upload-part", ...upload, "--part-number", "1", "--body", firstPart], "NoSuchUpload");
       await rejected("p1", ["s3api", "upload-part", "--bucket", "results", "--key", "wrong.bin", `--upload-id=${UploadId}`, "--part-number", "1", "--body", binary], "NoSuchUpload");
       // Replacing a part must retain the metadata associated with each ETag.
       const replaced = await api("p1", "upload-part", [...upload, "--part-number", "1", "--body", binary]);
@@ -250,7 +262,7 @@ export async function runS3CliTests(manifest) {
         parts.push({ PartNumber: number, ETag });
       }
       const versions = await db.prepare(`SELECT etag, algorithm, typeof(algorithm) AS algorithm_type FROM s3_multipart_part
-        WHERE object_key = ? AND r2_upload_id = ? AND part_number = 1`).bind("projects/1/results/multipart.bin", UploadId).all();
+        WHERE object_key = ? AND r2_upload_id = ? AND part_number = 1`).bind(resultKey(1, "multipart.bin"), UploadId).all();
       assert.deepEqual(versions.results.map(({ etag }) => etag).sort(), [replaced.ETag, parts[0].ETag].map((etag) => etag.replaceAll('"', "")).sort());
       for (const row of versions.results) {
         assert.equal(row.algorithm_type, "integer");
@@ -262,7 +274,7 @@ export async function runS3CliTests(manifest) {
       assert.equal(completed.Bucket, "results");
       await assertUploadRemoved(UploadId);
       const expected = await fixture("multipart-expected.bin", Buffer.concat([await readFile(firstPart), await readFile(binary)]));
-      expectedObjects.set("projects/1/results/multipart.bin", expected);
+      expectedObjects.set(resultKey(1, "multipart.bin"), expected);
     });
     await test("multipart abort and invalid parts", async () => {
       const { UploadId } = await api("p1", "create-multipart-upload", ["--bucket", "results", "--key", "aborted.bin"]);
@@ -282,7 +294,7 @@ export async function runS3CliTests(manifest) {
       await rejected("p1", ["s3api", "get-object", "--bucket", "results", "--key", "shared.bin", join(directory, "forbidden")], "AccessDenied");
       await rejected("p1", ["s3", "ls", "s3://results/"], "AccessDenied");
       await rejected("p1", ["s3api", "create-multipart-upload", "--bucket", "resources", "--key", "forbidden.txt"], "AccessDenied");
-      for (const project of ["missing", "bad"]) await rejected(project, ["s3", "cp", input, "s3://results/forbidden.txt", "--only-show-errors"], "AccessDenied");
+      for (const project of ["missing", "missingRun", "bad"]) await rejected(project, ["s3", "cp", input, "s3://results/forbidden.txt", "--only-show-errors"], "AccessDenied");
       await rejected("p1", ["s3", "rm", "s3://resources/input.txt", "--only-show-errors"], "NotImplemented");
       await rejected("p1", ["s3api", "get-object", "--bucket", "resources", "--key", "absent", join(directory, "absent")], "NoSuchKey");
     });
@@ -298,7 +310,7 @@ export async function runS3CliTests(manifest) {
     await test("aws s3 cp uploads small/empty/multipart files over HTTPS", async () => {
       for (const [name, file] of [["small", input], ["empty", empty], ["multipart", large]]) {
         await aws("p1", ["s3", "cp", file, `s3://results/https-${name}`]);
-        expectedObjects.set(`projects/1/results/https-${name}`, file);
+        expectedObjects.set(resultKey(1, `https-${name}`), file);
       }
     });
 
@@ -325,7 +337,9 @@ export async function runS3CliTests(manifest) {
       for (const key of [
         "results/shared.bin", "projects/1/result/shared.bin", "projects/1/result/forbidden.txt",
         "projects/1/resources/forbidden.txt", "projects/1/results/forbidden.txt",
-        "projects/1/results/aborted.bin", "projects/2/results/multipart.bin",
+        "projects/1/results/shared.bin", "projects/2/results/shared.bin", "projects/1/results/multipart.bin",
+        resultKey(1, "forbidden.txt"), resultKey(1, "aborted.bin"), resultKey(2, "multipart.bin"),
+        resultKey(1, "multipart.bin", nextRunId),
       ]) {
         const response = await r2("get", key, join(directory, "absent-object"), true);
         assert.notEqual(response.code, 0, `Unexpected R2 object: ${key}`);

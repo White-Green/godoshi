@@ -22,19 +22,22 @@ use worker::{Bucket, Conditional, D1Database, Data, HttpMetadata, Request};
 mod checksum;
 mod multipart;
 
-// Container URLs s3://<bucket>/<key> map to R2 keys projects/<project_id>/<bucket>/<key>.
+// Resources map to projects/<project_id>/resources/<key>;
+// results map to projects/<project_id>/results/<run_id>/<key>.
 const RESOURCES_BUCKET: &str = "resources";
 const RESULTS_BUCKET: &str = "results";
 
 #[derive(Deserialize, Serialize)]
 pub struct Params {
     pub project_id: u64,
+    pub run_id: String,
 }
 
 struct ProjectStorage {
     r2: SendWrapper<Bucket>,
     db: D1Database,
     project_id: u64,
+    run_id: String,
 }
 
 pub async fn handle(req: Request, r2: Bucket, db: D1Database, params: Params) -> S3Result<s3s::HttpResponse> {
@@ -48,6 +51,7 @@ pub async fn handle(req: Request, r2: Bucket, db: D1Database, params: Params) ->
         r2: SendWrapper::new(r2),
         db,
         project_id: params.project_id,
+        run_id: params.run_id,
     })
     .build()
     .call(request)
@@ -74,7 +78,10 @@ impl ProjectStorage {
             return Err(S3Error::new(S3ErrorCode::AccessDenied));
         }
         validate_key(key)?;
-        let internal_key = format!("projects/{}/{bucket}/{key}", self.project_id);
+        let internal_key = match access_type {
+            AccessType::Read => format!("projects/{}/{bucket}/{key}", self.project_id),
+            AccessType::Write => format!("projects/{}/{bucket}/{}/{key}", self.project_id, self.run_id),
+        };
         if internal_key.len() > 1024 {
             return Err(S3Error::new(S3ErrorCode::InvalidArgument));
         }
