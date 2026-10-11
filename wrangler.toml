@@ -21,6 +21,7 @@ BASE_URL = "https://godoshi.white-green.net"
 [[containers]]
 class_name = "MyContainer"
 image = "./container/Dockerfile"
+instance_type = "basic"
 max_instances = 10
 
 [[durable_objects.bindings]]
