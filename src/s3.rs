@@ -22,6 +22,10 @@ use worker::{Bucket, Conditional, D1Database, Data, HttpMetadata, Request};
 mod checksum;
 mod multipart;
 
+// Container URLs s3://<bucket>/<key> map to R2 keys projects/<project_id>/<bucket>/<key>.
+const RESOURCES_BUCKET: &str = "resources";
+const RESULTS_BUCKET: &str = "results";
+
 #[derive(Deserialize, Serialize)]
 pub struct Params {
     pub project_id: u64,
@@ -63,8 +67,8 @@ enum AccessType {
 impl ProjectStorage {
     fn key(&self, bucket: &str, key: &str, access_type: AccessType) -> S3Result<String> {
         let access_allowed = match access_type {
-            AccessType::Read => bucket == "resources",
-            AccessType::Write => bucket == "result",
+            AccessType::Read => bucket == RESOURCES_BUCKET,
+            AccessType::Write => bucket == RESULTS_BUCKET,
         };
         if !access_allowed {
             return Err(S3Error::new(S3ErrorCode::AccessDenied));
@@ -425,7 +429,7 @@ impl S3 for ProjectStorage {
 
     async fn head_bucket(&self, req: S3Request<HeadBucketInput>) -> S3Result<S3Response<HeadBucketOutput>> {
         let HeadBucketInput { bucket, .. } = req.input;
-        if !matches!(bucket.as_str(), "resources" | "result") {
+        if !matches!(bucket.as_str(), RESOURCES_BUCKET | RESULTS_BUCKET) {
             return Err(S3Error::new(S3ErrorCode::AccessDenied));
         }
         Ok(S3Response::new(HeadBucketOutput::default()))
