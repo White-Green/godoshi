@@ -197,11 +197,12 @@ async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Resul
 #[event(queue)]
 #[tracing::instrument(name = "queue", skip_all, fields(queue = %message_batch.queue()), err)]
 async fn queue(message_batch: MessageBatch<container::RunRequest>, env: Env, _ctx: Context) -> worker::Result<()> {
+    let received_at = time::OffsetDateTime::now_utc();
     for message in message_batch.messages()? {
         let message_id = message.id();
         let name = format!("{}:{message_id}", message_batch.queue());
         // The queue awaits completion; jobs must fit its 15-minute wall-time limit.
-        match container::run(&env, &name, message.body()).await {
+        match container::run(&env, &name, message.body(), received_at).await {
             Ok(()) => {
                 message.ack();
                 tracing::info!(message_id, "Build message acknowledged");

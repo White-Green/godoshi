@@ -28,38 +28,40 @@ impl DurableObject for MyContainer {
         if req.method() != Method::Post {
             return Response::error("Method not allowed", 405);
         }
-        let job: RunRequest = match req.json().await {
+        let job: s3::Params = match req.json().await {
             Ok(job) => job,
-            Err(_) => return Response::error("A numeric project_id is required", 400),
+            Err(_) => return Response::error("A numeric project_id and run_id are required", 400),
         };
 
         let container = self
             .state
             .container()
             .ok_or_else(|| worker::Error::RustError("CONTAINER has no container configured".into()))?;
-        let outbound = Fetcher::unchecked_from_js(
-            self.state
-                .exports()
-                .get_with_props("OutboundHandler", &s3::Params { project_id: job.project_id })?,
-        );
+        let outbound = Fetcher::unchecked_from_js(self.state.exports().get_with_props("OutboundHandler", &job)?);
         // Install the project-scoped S3 intercept before startup downloads the closure.
         container.intercept_outbound_http(S3_HOST, &outbound).await?;
         if !container.running() {
             container.start(None)?;
-            tracing::info!(project_id = job.project_id, "Build container started");
+            tracing::info!(project_id = job.project_id, run_id = job.run_id, "Build container started");
         }
 
         // Startup errors and non-zero exits reject monitor.
         container.wait_for_exit().await?;
-        tracing::info!(project_id = job.project_id, "Build container completed");
+        tracing::info!(project_id = job.project_id, run_id = job.run_id, "Build container completed");
         Response::empty()
     }
 }
 
-pub async fn run(env: &Env, name: &str, params: &RunRequest) -> worker::Result<()> {
+pub async fn run(env: &Env, name: &str, params: &RunRequest, received_at: time::OffsetDateTime) -> worker::Result<()> {
+    let mut random = [0; 8];
+    getrandom::fill(&mut random).map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let params = s3::Params {
+        project_id: params.project_id,
+        run_id: format!("{}-{}", received_at.unix_timestamp(), u64::from_le_bytes(random)),
+    };
     let namespace = env.durable_object("CONTAINER")?;
     let stub = namespace.id_from_name(name)?.get_stub()?;
-    let body = serde_json::to_string(params)?;
+    let body = serde_json::to_string(&params)?;
     let request = Request::new_with_init(
         "http://container/run",
         RequestInit::new().with_method(Method::Post).with_body(Some(body.into())),
