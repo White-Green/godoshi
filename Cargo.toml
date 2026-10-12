@@ -14,8 +14,11 @@ worker-tests = []
 taplo-cli = "0.10.0"
 
 [dependencies]
+askama = { features = ["code-in-doc", "derive"], version = "0.16.1" }
+askama_web = { features = ["axum-0.8"], version = "0.16.0" }
 async-trait = "0.1.92"
 axum = { default-features = false, features = [
+  "form",
   "json",
   "macros",
   "original-uri",

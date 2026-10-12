@@ -10,8 +10,9 @@ pub struct UserId(u64);
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct UserPermissionSet: u8 {
-        const ADMIN       = 0b01;
-        const PERTICIPENT = 0b10;
+        const ADMIN       = 0b001;
+        const REVIEWER    = 0b010;
+        const PARTICIPANT = 0b100;
     }
 }
 

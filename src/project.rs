@@ -64,6 +64,12 @@ impl PartialEq<str> for ProjectName {
 #[serde(transparent)]
 pub struct ProjectId(u64);
 
+impl Display for ProjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectState {
     pub id: ProjectId,

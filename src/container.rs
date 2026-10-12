@@ -57,7 +57,8 @@ pub async fn run(env: &Env, name: &str, params: &RunRequest, received_at: time::
     getrandom::fill(&mut random).map_err(|error| worker::Error::RustError(error.to_string()))?;
     let params = s3::Params {
         project_id: params.project_id,
-        run_id: format!("{}-{}", received_at.unix_timestamp(), u64::from_le_bytes(random)),
+        // Newer runs sort first when R2 lists keys in ascending order.
+        run_id: format!("{:012}-{}", 1_000_000_000_000 - received_at.unix_timestamp(), u64::from_le_bytes(random)),
     };
     let namespace = env.durable_object("CONTAINER")?;
     let stub = namespace.id_from_name(name)?.get_stub()?;

@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Redirect};
 use axum::{Extension, Router};
 use axum_extra::extract::cookie::Cookie;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use time::{Duration, OffsetDateTime};
 
 pub mod discord;
@@ -22,6 +23,7 @@ pub mod tests;
 pub struct AuthState {
     pub user_id: UserId,
     pub project: ProjectState,
+    pub username: SmolStr,
     pub permission_set: UserPermissionSet,
 }
 
@@ -79,35 +81,37 @@ where
     let db = state.db();
     let query = worker::query!(
         &db,
-        "select permission_set from permission where project_id = ? and user_id = ?",
+        "select username, permission_set from project_member where project_id = ? and user_id = ?",
         project.id,
         user_id
     )
-    .expect("Permission query parameters must be valid D1 values");
+    .expect("Project member query parameters must be valid D1 values");
     let result = query
         .all()
         .await
         .map_err(|_| {
-            tracing::error!("User permissions database lookup failed");
+            tracing::error!("Project member database lookup failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .results::<QueryResult>()
-        .expect("Permission query results must match the schema and permission bits");
+        .expect("Project member query results must match the schema and permission bits");
 
-    let permission_set = match result.as_slice() {
-        [] => UserPermissionSet::empty(),
-        &[QueryResult { permission_set }] => permission_set,
+    let (username, permission_set) = match result.as_slice() {
+        [] => return Err(StatusCode::FORBIDDEN),
+        [QueryResult { username, permission_set }] => (username.clone(), *permission_set),
         _ => unreachable!(),
     };
 
     return Ok(AuthState {
         user_id,
         project,
+        username,
         permission_set,
     });
 
     #[derive(Debug, Deserialize)]
     struct QueryResult {
+        username: SmolStr,
         permission_set: UserPermissionSet,
     }
 }
