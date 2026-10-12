@@ -31,7 +31,6 @@ where
 /// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
 /// <h1>原稿提出</h1>
 /// {% if uploaded %}<p role="status">アップロードしました。</p>{% endif %}
-/// <p>1ファイル20 MiBまで。同じ名前のファイルは上書きされます。</p>
 /// <form action="/{{ project_name }}/participant/upload" method="post" enctype="multipart/form-data">
 ///     <label>原稿ファイル <input type="file" name="file" required /></label>
 ///     <input type="submit" value="アップロード" />
@@ -172,21 +171,35 @@ async fn upload<S: GenericConfigProvider>(
         return Err((StatusCode::BAD_REQUEST, "ファイルを選択してください。"));
     };
     let filename = file.name();
-    let key = format!("projects/{}/resources/authors/{filename}", auth_state.project.id);
-    if filename.trim().is_empty()
-        || matches!(filename.as_str(), "." | "..")
-        || filename.contains(['/', '\\'])
-        || filename.chars().any(char::is_control)
-        || key.len() > 1024
-    {
+    let extension = std::path::Path::new(&filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.trim().is_empty());
+    let username = author_username(&auth_state);
+    let prefix = format!("projects/{}/resources/authors/{username}/", auth_state.project.id);
+    let key = match extension {
+        Some(extension) => format!("{prefix}1.{extension}"),
+        None => format!("{prefix}1"),
+    };
+    if key.len() > 1024 || !results::valid_key(&key) {
         return Err((StatusCode::BAD_REQUEST, "ファイル名が不正です。"));
     }
     if file.size() > MAX_FILE_SIZE {
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "ファイルは20 MiB以下にしてください。"));
     }
     let bytes = file.bytes().await.map_err(storage_error)?;
-    state
-        .bucket()
+    let bucket = state.bucket();
+    loop {
+        let objects = bucket.list().prefix(&prefix).limit(100).execute().await.map_err(storage_error)?.objects();
+        if objects.is_empty() {
+            break;
+        }
+        bucket
+            .delete_multiple(objects.iter().map(|object| object.key()).collect())
+            .await
+            .map_err(storage_error)?;
+    }
+    bucket
         .put(key, bytes)
         .http_metadata(HttpMetadata {
             content_type: Some("application/octet-stream".into()),

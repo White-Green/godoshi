@@ -34,6 +34,7 @@ pub async fn run(context: &mut TestContext) {
     context.run(review_groups_runs_in_ascending_order).await;
     context.run(review_lists_all_run_files_in_descending_order).await;
     context.run(participant_uploads_and_replaces_files).await;
+    context.run(participant_uploads_are_isolated).await;
     context.run(participant_rejects_invalid_uploads).await;
     context.run(participant_lists_and_streams_own_results).await;
     context.run(participant_lists_all_own_results).await;
@@ -812,27 +813,84 @@ fn multipart(filename: &str, contents: &str) -> Request<Body> {
 async fn participant_uploads_and_replaces_files(env: Env) {
     let (config, auth) = setup(env, UserPermissionSet::PARTICIPANT).await;
     let bucket = config.bucket();
-    for contents in ["first submission", "replacement"] {
-        let response = call(&config, &auth, multipart("原稿 &%.txt", contents)).await;
-        assert_saved(response).await;
-        let object = bucket.get("projects/1/resources/authors/原稿 &%.txt").execute().await.unwrap().unwrap();
-        assert_eq!(object.body().unwrap().text().await.unwrap(), contents);
+    // Old submissions, including nested files, must all be removed across list batches.
+    for index in 0..101 {
+        bucket
+            .put(format!("projects/1/resources/authors/owner/old/{index}.pdf"), "old manuscript".to_owned())
+            .execute()
+            .await
+            .unwrap();
     }
-    assert_eq!(bucket.list().execute().await.unwrap().objects().len(), 1);
+    for (filename, saved_name, contents) in [
+        ("原稿 &%.txt", "1.txt", "first submission"),
+        ("修正版.final.txt", "1.txt", "replacement"),
+        ("原稿", "1", "without extension"),
+        (".hidden", "1", "hidden file"),
+        ("原稿.", "1", "empty extension"),
+        ("原稿. ", "1", "blank extension"),
+        (".", "1", "dot filename"),
+        ("..", "1", "parent filename"),
+        ("../outside.txt", "1.txt", "parent path"),
+        ("nested/file.txt", "1.txt", "nested path"),
+        ("nested\\file.txt", "1.txt", "Windows path"),
+        ("原稿\t.txt", "1.txt", "control character in discarded name"),
+    ] {
+        let response = call(&config, &auth, multipart(filename, contents)).await;
+        assert_saved(response).await;
+        let object = bucket
+            .get(format!("projects/1/resources/authors/owner/{saved_name}"))
+            .execute()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(object.body().unwrap().text().await.unwrap(), contents);
+        assert_eq!(bucket.list().execute().await.unwrap().objects().len(), 1);
+    }
     // Manuscripts should not hit Axum's default 2 MiB form limit.
     let contents = "x".repeat(2 * 1024 * 1024 + 1);
     let notice_cookie = assert_saved(call(&config, &auth, multipart("large.txt", &contents)).await).await;
     assert_eq!(
-        bucket.head("projects/1/resources/authors/large.txt").await.unwrap().unwrap().size(),
+        bucket.head("projects/1/resources/authors/owner/1.txt").await.unwrap().unwrap().size(),
         contents.len() as u64
     );
+    assert!(bucket.head("projects/1/resources/authors/owner/1").await.unwrap().is_none());
+    assert_saved(call(&config, &auth, multipart("完成稿.PDF", "%PDF-test")).await).await;
+    assert!(bucket.head("projects/1/resources/authors/owner/1.PDF").await.unwrap().is_some());
+    assert!(bucket.head("projects/1/resources/authors/owner/1.txt").await.unwrap().is_none());
+    assert_eq!(bucket.list().execute().await.unwrap().objects().len(), 1);
     let html = consume_notice(&config, &auth, "/participant", &notice_cookie, "アップロードしました。").await;
     assert!(html.contains("enctype=\"multipart/form-data\""));
 }
 
+async fn participant_uploads_are_isolated(env: Env) {
+    let (config, auth) = setup(env, UserPermissionSet::PARTICIPANT).await;
+    let mut other_author = auth.clone();
+    other_author.user_id = serde_json::from_str("2").unwrap();
+    other_author.username = "owner-extra".into();
+    let mut other_project = auth.clone();
+    other_project.project.id = serde_json::from_str("2").unwrap();
+    let submissions = [
+        (&other_author, "projects/1/resources/authors/owner-extra/1.txt", "other author"),
+        (&other_project, "projects/2/resources/authors/owner/1.txt", "other project"),
+        (&auth, "projects/1/resources/authors/owner/1.txt", "owner"),
+    ];
+    for (auth, _, contents) in submissions {
+        assert_saved(call(&config, auth, multipart("原稿.txt", contents)).await).await;
+    }
+    for (_, key, contents) in submissions {
+        let object = config.bucket().get(key).execute().await.unwrap().unwrap();
+        assert_eq!(object.body().unwrap().text().await.unwrap(), contents);
+    }
+    assert_eq!(config.bucket().list().execute().await.unwrap().objects().len(), 3);
+}
+
 async fn participant_rejects_invalid_uploads(env: Env) {
     let (config, auth) = setup(env, UserPermissionSet::PARTICIPANT).await;
-    for filename in ["", ".", "..", "../outside.txt", "nested/file.txt", "nested\\file.txt"] {
+    let bucket = config.bucket();
+    let existing_key = "projects/1/resources/authors/owner/1.txt";
+    bucket.put(existing_key, "existing manuscript".to_owned()).execute().await.unwrap();
+    let long_extension = format!("原稿.{}", "x".repeat(1024));
+    for filename in ["", "原稿.t\\xt", "原稿.t\txt", &long_extension] {
         assert_eq!(
             call(&config, &auth, multipart(filename, "bad")).await.status(),
             StatusCode::BAD_REQUEST,
@@ -843,14 +901,16 @@ async fn participant_rejects_invalid_uploads(env: Env) {
         call(&config, &auth, post("/participant/upload", "file=not-a-file")).await.status(),
         StatusCode::BAD_REQUEST
     );
-    assert!(config.bucket().list().execute().await.unwrap().objects().is_empty());
+    assert_eq!(bucket.list().execute().await.unwrap().objects().len(), 1);
     let mut request = multipart("large.txt", "");
     let chunk = axum::body::Bytes::from(vec![0; 1024 * 1024]);
     *request.body_mut() = Body::from_stream(futures::stream::iter(
         (0..21).map(move |_| Ok::<_, std::convert::Infallible>(chunk.clone())),
     ));
     assert_eq!(call(&config, &auth, request).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(config.bucket().list().execute().await.unwrap().objects().is_empty());
+    assert_eq!(bucket.list().execute().await.unwrap().objects().len(), 1);
+    let object = bucket.get(existing_key).execute().await.unwrap().unwrap();
+    assert_eq!(object.body().unwrap().text().await.unwrap(), "existing manuscript");
 }
 
 async fn participant_lists_and_streams_own_results(env: Env) {
