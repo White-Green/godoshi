@@ -46,7 +46,8 @@ pub async fn migration_preserves_members(env: Env) {
     statements.extend([
         db.prepare("INSERT INTO project (id, name) VALUES (1, 'alpha'), (2, 'beta')"),
         db.prepare("INSERT INTO user (id) VALUES (1), (2)"),
-        db.prepare("INSERT INTO discord_user (id, username) VALUES (1, 'discord.author')"),
+        db.prepare("INSERT INTO discord_user (id, discord_id, username) VALUES (1, '12345', 'discord.author')"),
+        db.prepare("INSERT INTO discord_user (id, username) VALUES (2, 'unlinked.author')"),
         db.prepare("INSERT INTO permission (project_id, user_id, permission_set) VALUES (1, 1, 5), (1, 2, 4), (2, 1, 2)"),
     ]);
     statements.extend(
@@ -69,7 +70,7 @@ pub async fn migration_preserves_members(env: Env) {
             TestProjectMember {
                 project_id: 1,
                 user_id: 2,
-                username: "user-2".into(),
+                username: "unlinked.author".into(),
                 permission_set: 4,
             },
             TestProjectMember {

@@ -7,12 +7,13 @@ use crate::test_db::user::TestUser;
 use crate::test_db::{project, project_member, user};
 use crate::user::UserPermissionSet;
 use crate::worker_tests::TestContext;
+use axum::http::StatusCode;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 use worker::{Bucket, D1Database, Env};
 
 pub async fn run(context: &mut TestContext) {
-    context.run(missing_permissions).await;
+    context.run(missing_membership).await;
     context.run(empty_permissions).await;
     context.run(admin_permission).await;
     context.run(participant_permission).await;
@@ -65,21 +66,21 @@ async fn check_permission_set(env: Env, permissions: Option<UserPermissionSet>) 
     }
     let before = project_member::rows(&db).await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
-
-    assert_eq!(
-        auth,
-        AuthState {
+    let auth = construct_auth_state(&config, user_id, project.clone()).await;
+    let expected = match permissions {
+        Some(permission_set) => Ok(AuthState {
             user_id,
             project,
-            username: permissions.map(|_| "alice".into()),
-            permission_set: permissions.unwrap_or_else(UserPermissionSet::empty),
-        },
-    );
+            username: "alice".into(),
+            permission_set,
+        }),
+        None => Err(StatusCode::FORBIDDEN),
+    };
+    assert_eq!(auth, expected);
     assert_eq!(project_member::rows(&db).await, before);
 }
 
-async fn missing_permissions(env: Env) {
+async fn missing_membership(env: Env) {
     check_permission_set(env, None).await;
 }
 
@@ -141,16 +142,8 @@ async fn permissions_are_scoped_to_user(env: Env) {
     )
     .await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
-    assert_eq!(
-        auth,
-        AuthState {
-            user_id,
-            project: project.clone(),
-            username: None,
-            permission_set: UserPermissionSet::empty(),
-        },
-    );
+    let auth = construct_auth_state(&config, user_id, project.clone()).await;
+    assert_eq!(auth, Err(StatusCode::FORBIDDEN));
 
     project_member::insert(
         &db,
@@ -172,7 +165,7 @@ async fn permissions_are_scoped_to_user(env: Env) {
         AuthState {
             user_id,
             project: project.clone(),
-            username: Some("alice".into()),
+            username: "alice".into(),
             permission_set: UserPermissionSet::PARTICIPANT,
         },
     );
@@ -181,7 +174,7 @@ async fn permissions_are_scoped_to_user(env: Env) {
         AuthState {
             user_id: other_user_id,
             project,
-            username: Some("bob".into()),
+            username: "bob".into(),
             permission_set: UserPermissionSet::ADMIN,
         },
     );
@@ -205,16 +198,8 @@ async fn permissions_are_scoped_to_project(env: Env) {
     )
     .await;
 
-    let auth = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
-    assert_eq!(
-        auth,
-        AuthState {
-            user_id,
-            project: project.clone(),
-            username: None,
-            permission_set: UserPermissionSet::empty(),
-        },
-    );
+    let auth = construct_auth_state(&config, user_id, project.clone()).await;
+    assert_eq!(auth, Err(StatusCode::FORBIDDEN));
 
     project_member::insert(
         &db,
@@ -236,7 +221,7 @@ async fn permissions_are_scoped_to_project(env: Env) {
         AuthState {
             user_id,
             project,
-            username: Some("alpha-author".into()),
+            username: "alpha-author".into(),
             permission_set: UserPermissionSet::PARTICIPANT,
         },
     );
@@ -245,7 +230,7 @@ async fn permissions_are_scoped_to_project(env: Env) {
         AuthState {
             user_id,
             project: other_project,
-            username: Some("beta-author".into()),
+            username: "beta-author".into(),
             permission_set: UserPermissionSet::ADMIN,
         },
     );
@@ -272,7 +257,7 @@ async fn username_is_independent_of_discord(env: Env) {
     )
     .await;
     let before = construct_auth_state(&config, user_id, project.clone()).await.unwrap();
-    assert_eq!(before.username.as_deref(), Some("pen.name"));
+    assert_eq!(before.username.as_str(), "pen.name");
     let discord = crate::user::discord::find(&db, "12345".into(), "discord.after".into())
         .await
         .unwrap()
@@ -284,6 +269,6 @@ async fn username_is_independent_of_discord(env: Env) {
         .await
         .unwrap();
     let after = construct_auth_state(&config, user_id, project).await.unwrap();
-    assert_eq!(after.username.as_deref(), Some("new.pen.name"));
+    assert_eq!(after.username.as_str(), "new.pen.name");
     assert_eq!(after.permission_set, before.permission_set);
 }

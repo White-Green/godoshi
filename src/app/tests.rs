@@ -12,7 +12,9 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use axum::{Extension, Router};
+use futures::FutureExt;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use std::panic::AssertUnwindSafe;
 use tower_service::Service;
 use worker::{Bucket, D1Database, Env};
 
@@ -32,7 +34,7 @@ pub async fn run(context: &mut TestContext) {
     context.run(participant_rejects_invalid_uploads).await;
     context.run(participant_lists_and_streams_own_results).await;
     context.run(participant_lists_all_own_results).await;
-    context.run(participant_results_require_username).await;
+    context.run(participant_results_panic_on_invalid_username).await;
 }
 
 #[derive(Clone)]
@@ -76,7 +78,7 @@ async fn setup(env: Env, permissions: UserPermissionSet) -> (TestConfig, AuthSta
     .await;
     let auth = AuthState {
         user_id: serde_json::from_str("1").unwrap(),
-        username: Some("owner".into()),
+        username: "owner".into(),
         project: ProjectState {
             id: project_id,
             name: ProjectName::new("alpha".into()).unwrap(),
@@ -753,7 +755,7 @@ async fn participant_lists_and_streams_own_results(env: Env) {
     )
     .await;
     auth.user_id = serde_json::from_str("2").unwrap();
-    auth.username = Some("other".into());
+    auth.username = "other".into();
     auth.permission_set = UserPermissionSet::PARTICIPANT;
     let response = call(&config, &auth, get(&format!("/participant/{encoded_run}/file?key=other.pdf"))).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -803,17 +805,15 @@ async fn participant_lists_all_own_results(env: Env) {
     }
 }
 
-async fn participant_results_require_username(env: Env) {
+async fn participant_results_panic_on_invalid_username(env: Env) {
     let (config, mut auth) = setup(env, UserPermissionSet::PARTICIPANT).await;
     for username in ["", "..", "owner/../other", "owner\\other"] {
-        auth.username = Some(username.into());
+        auth.username = username.into();
         for path in ["/participant", "/participant/run", "/participant/run/file?key=test.pdf"] {
-            assert_eq!(call(&config, &auth, get(path)).await.status(), StatusCode::FORBIDDEN);
+            AssertUnwindSafe(call(&config, &auth, get(path)))
+                .catch_unwind()
+                .await
+                .expect_err("Invalid internal usernames must panic rather than return an HTTP error");
         }
-    }
-    auth.user_id = serde_json::from_str("99").unwrap();
-    auth.username = None;
-    for path in ["/participant", "/participant/run", "/participant/run/file?key=test.pdf"] {
-        assert_eq!(call(&config, &auth, get(path)).await.status(), StatusCode::FORBIDDEN);
     }
 }
