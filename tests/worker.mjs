@@ -7,7 +7,10 @@ export async function runWorkerTests(manifest) {
         name: "godoshi-tests",
         compatibilityDate: "2026-09-26",
         manifest,
-        env: { TEST_DB: { type: "d1", id: "godoshi-tests" } },
+        env: {
+          TEST_DB: { type: "d1", id: "godoshi-tests" },
+          TEST_BUCKET: { type: "r2", name: "godoshi-tests" },
+        },
       },
     }],
   });

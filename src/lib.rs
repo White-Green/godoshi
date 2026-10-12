@@ -84,6 +84,10 @@ impl GenericConfigProvider for AppState {
     fn db(&self) -> D1Database {
         self.env.d1("DB").unwrap()
     }
+
+    fn bucket(&self) -> worker::Bucket {
+        self.env.bucket("BUCKET").expect("BUCKET must be configured")
+    }
 }
 
 impl HttpClient for AppState {
@@ -139,7 +143,7 @@ fn router(env: Env) -> Router {
         .nest("/auth", auth::route())
         .nest_service(
             "/{project}",
-            app::route()
+            app::route(state.clone())
                 .fallback(async || StatusCode::NOT_FOUND)
                 .layer(tower::builder::ServiceBuilder::new().layer(project_layer).layer(auth_layer)),
         )

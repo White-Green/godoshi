@@ -69,10 +69,12 @@ async fn reset_database(env: &Env) {
     let db = env.d1("TEST_DB").unwrap();
     let scripts = [
         "DROP TABLE IF EXISTS s3_multipart_part; DROP TABLE IF EXISTS s3_multipart_upload;
-         DROP TABLE IF EXISTS permission; DROP TABLE IF EXISTS discord_user; DROP TABLE IF EXISTS user; DROP TABLE IF EXISTS project;",
+         DROP TABLE IF EXISTS permission; DROP TABLE IF EXISTS project_member;
+         DROP TABLE IF EXISTS discord_user; DROP TABLE IF EXISTS user; DROP TABLE IF EXISTS project;",
         include_str!("../migrations/0001_initial.sql"),
         include_str!("../migrations/0002_setup.sql"),
         include_str!("../migrations/0003_s3_multipart.sql"),
+        include_str!("../migrations/0004_project_member.sql"),
     ];
     let statements = scripts
         .into_iter()
@@ -86,9 +88,11 @@ async fn reset_database(env: &Env) {
 
 pub async fn run(env: Env) -> Response {
     let mut context = TestContext { env, results: Vec::new() };
+    context.run(crate::test_db::project_member::migration_preserves_members).await;
     crate::project::tests::run(&mut context).await;
     crate::auth::tests::run(&mut context).await;
     crate::user::discord::tests::run(&mut context).await;
+    crate::app::tests::run(&mut context).await;
 
     let passed = context.results.iter().filter(|result| result.status == TestStatus::Passed).count();
     let failed = context.results.len() - passed;
