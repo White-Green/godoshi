@@ -20,7 +20,7 @@ where
 }
 
 /// ```askama
-/// <p><a href="/{{ project_name }}/">戻る</a></p>
+/// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
 /// <h1>完成稿確認</h1>
 /// <ul>
 /// {% for run in runs %}
@@ -32,6 +32,7 @@ where
 #[template(ext = "html", in_doc = true)]
 struct ReviewIndexTemplate<'a> {
     project_name: &'a str,
+    show_project_link: bool,
     runs: &'a [ResultRun],
 }
 
@@ -69,6 +70,7 @@ async fn index<S: GenericConfigProvider>(
         "完成稿確認",
         ReviewIndexTemplate {
             project_name: auth_state.project.name.as_ref(),
+            show_project_link: auth_state.permission_set.bits().count_ones() >= 2,
             runs: &runs,
         },
     ))

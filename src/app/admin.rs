@@ -1,9 +1,10 @@
+use super::notice::Notices;
 use super::{render, storage_error};
 use crate::auth::AuthState;
 use crate::config::GenericConfigProvider;
 use crate::user::{UserId, UserPermissionSet};
 use askama::Template;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Form, Router};
@@ -21,7 +22,7 @@ where
 }
 
 /// ```askama
-/// <p><a href="/{{ project_name }}/">戻る</a></p>
+/// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
 /// <h1>参加者管理</h1>
 /// {% if saved %}<p role="status">保存しました。</p>{% endif %}
 /// {% for user in users %}
@@ -47,6 +48,7 @@ where
 #[template(ext = "html", in_doc = true)]
 struct AdminTemplate<'a> {
     project_name: &'a str,
+    show_project_link: bool,
     users: Vec<AdminUser>,
     saved: bool,
 }
@@ -56,12 +58,6 @@ struct AdminUser {
     id: u64,
     name: String,
     permission_set: UserPermissionSet,
-}
-
-#[derive(Default, Deserialize)]
-struct Notice {
-    #[serde(default)]
-    saved: bool,
 }
 
 #[derive(Deserialize)]
@@ -105,7 +101,7 @@ struct AddUser {
 async fn admin<S: GenericConfigProvider>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
-    Query(notice): Query<Notice>,
+    Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.permission_set.contains(UserPermissionSet::ADMIN) {
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
@@ -124,14 +120,15 @@ async fn admin<S: GenericConfigProvider>(
     .map_err(storage_error)?
     .results::<AdminUser>()
     .expect("Admin query results must match the schema");
-    return Ok(render(
+    Ok(render(
         "参加者管理",
         AdminTemplate {
             project_name: auth_state.project.name.as_ref(),
+            show_project_link: auth_state.permission_set.bits().count_ones() >= 2,
             users,
-            saved: notice.saved,
+            saved: notices.get("saved").and_then(|value| value.as_bool()).unwrap_or_default(),
         },
-    ));
+    ))
 }
 
 #[worker::send]
@@ -165,7 +162,11 @@ async fn update_permission<S: GenericConfigProvider>(
     if updated.is_none() {
         return Err((StatusCode::CONFLICT, "対象の参加者がいません。"));
     }
-    Ok(Redirect::to(&format_smolstr!("/{}/admin?saved=true", auth_state.project.name)).into_response())
+    Ok((
+        Extension(Notices::from([("saved", true)])),
+        Redirect::to(&format_smolstr!("/{}/admin", auth_state.project.name)),
+    )
+        .into_response())
 }
 
 #[worker::send]
@@ -229,7 +230,11 @@ async fn add_user<S: GenericConfigProvider>(
     {
         return Err((StatusCode::CONFLICT, "すでに参加しているユーザーです。権限は一覧から更新してください。"));
     }
-    Ok(Redirect::to(&format_smolstr!("/{}/admin?saved=true", auth_state.project.name)).into_response())
+    Ok((
+        Extension(Notices::from([("saved", true)])),
+        Redirect::to(&format_smolstr!("/{}/admin", auth_state.project.name)),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
