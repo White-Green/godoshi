@@ -8,6 +8,7 @@ use axum::response::{Html, IntoResponse, Response};
 use oauth2::url::Url;
 
 mod admin;
+mod notice;
 mod participant;
 mod results;
 mod review;
@@ -26,6 +27,7 @@ where
         .merge(admin::route::<S>())
         .merge(review::route::<S>())
         .merge(participant::route::<S>())
+        .layer(axum::middleware::from_fn(notice::middleware))
         .layer(axum::middleware::from_fn_with_state(state.clone(), protect::<S>))
         .with_state(state)
 }

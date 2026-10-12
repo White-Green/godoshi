@@ -1,3 +1,4 @@
+use super::notice::Notices;
 use super::results::{self, FileQuery, ResultFile, ResultRun, RunPath};
 use super::{render, storage_error};
 use crate::auth::AuthState;
@@ -9,7 +10,6 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Router};
-use serde::Deserialize;
 use smol_str::format_smolstr;
 use worker::{FormEntry, HttpMetadata};
 
@@ -28,7 +28,7 @@ where
 }
 
 /// ```askama
-/// <p><a href="/{{ project_name }}/">戻る</a></p>
+/// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
 /// <h1>原稿提出</h1>
 /// {% if uploaded %}<p role="status">アップロードしました。</p>{% endif %}
 /// <p>1ファイル20 MiBまで。同じ名前のファイルは上書きされます。</p>
@@ -47,6 +47,7 @@ where
 #[template(ext = "html", in_doc = true)]
 struct ParticipantTemplate<'a> {
     project_name: &'a str,
+    show_project_link: bool,
     uploaded: bool,
     runs: Vec<ResultRun>,
 }
@@ -72,17 +73,11 @@ struct CompletedTemplate<'a> {
     files: Vec<ResultFile>,
 }
 
-#[derive(Deserialize)]
-struct Notice {
-    #[serde(default)]
-    uploaded: bool,
-}
-
 #[worker::send]
 async fn participant<S: GenericConfigProvider>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
-    Query(notice): Query<Notice>,
+    Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.permission_set.contains(UserPermissionSet::PARTICIPANT) {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
@@ -93,7 +88,8 @@ async fn participant<S: GenericConfigProvider>(
         "原稿提出",
         ParticipantTemplate {
             project_name: auth_state.project.name.as_ref(),
-            uploaded: notice.uploaded,
+            show_project_link: auth_state.permission_set.bits().count_ones() >= 2,
+            uploaded: notices.get("uploaded").and_then(|value| value.as_bool()).unwrap_or_default(),
             runs,
         },
     ))
@@ -199,5 +195,9 @@ async fn upload<S: GenericConfigProvider>(
         .execute()
         .await
         .map_err(storage_error)?;
-    Ok(Redirect::to(&format_smolstr!("/{}/participant?uploaded=true", auth_state.project.name)).into_response())
+    Ok((
+        Extension(Notices::from([("uploaded", true)])),
+        Redirect::to(&format_smolstr!("/{}/participant", auth_state.project.name)),
+    )
+        .into_response())
 }

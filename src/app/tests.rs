@@ -1,3 +1,4 @@
+use super::notice::{self, Notices};
 use super::route;
 use crate::auth::AuthState;
 use crate::config::GenericConfigProvider;
@@ -10,8 +11,9 @@ use crate::user::UserPermissionSet;
 use crate::worker_tests::TestContext;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use axum::response::Response;
-use axum::{Extension, Router};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::{Extension, Json, Router};
+use axum_extra::extract::cookie::{Cookie, SameSite};
 use futures::FutureExt;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use std::panic::AssertUnwindSafe;
@@ -19,6 +21,7 @@ use tower_service::Service;
 use worker::{Bucket, D1Database, Env};
 
 pub async fn run(context: &mut TestContext) {
+    context.run(notice_extensions_round_trip).await;
     context.run(admin_adds_and_reuses_users).await;
     context.run(admin_updates_project_permissions).await;
     context.run(admin_rejects_ambiguous_users).await;
@@ -97,7 +100,12 @@ async fn setup(env: Env, permissions: UserPermissionSet) -> (TestConfig, AuthSta
 }
 
 async fn call(config: &TestConfig, auth: &AuthState, request: Request<Body>) -> Response {
-    let mut router = Router::new().nest_service("/{project}", route(config.clone()).layer(Extension(auth.clone())));
+    let mut router = Router::new().nest_service(
+        "/{project}",
+        route(config.clone())
+            .layer(Extension(auth.clone()))
+            .layer(Extension(auth.project.clone())),
+    );
     router.call(request).await.unwrap()
 }
 
@@ -122,9 +130,181 @@ async fn body(response: Response) -> String {
     String::from_utf8(to_bytes(response.into_body(), 1024 * 1024).await.unwrap().to_vec()).unwrap()
 }
 
-async fn assert_saved(response: Response) {
-    let status = response.status();
-    assert_eq!(status, StatusCode::SEE_OTHER, "{}", body(response).await);
+async fn assert_saved(response: Response) -> String {
+    if response.status() != StatusCode::SEE_OTHER {
+        panic!("Expected a successful redirect, got {}: {}", response.status(), body(response).await);
+    }
+    let location = response.headers()["location"].to_str().unwrap();
+    assert!(!location.contains('?'));
+    assert_eq!(response.headers().get_all("set-cookie").iter().count(), 1);
+    let cookie = Cookie::parse(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+    assert_eq!(cookie.name(), "godoshi_notice");
+    assert_eq!(cookie.path(), Some("/alpha"));
+    let decoded = Cookie::parse_encoded(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(decoded.value()).unwrap();
+    assert_eq!(payload["path"], location);
+    assert_eq!(cookie.http_only(), Some(true));
+    assert_eq!(cookie.secure(), Some(true));
+    assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+    assert_eq!(cookie.max_age(), Some(time::Duration::minutes(5)));
+    format!("{}={}", cookie.name(), cookie.value())
+}
+
+async fn consume_notice(config: &TestConfig, auth: &AuthState, path: &str, cookie: &str, message: &str) -> String {
+    let response = call(config, auth, with_cookie(get(path), cookie)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get_all("set-cookie").iter().count(), 1);
+    let removed = Cookie::parse(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+    assert_eq!(removed.name(), "godoshi_notice");
+    assert_eq!(removed.path(), Some("/alpha"));
+    assert_eq!(removed.max_age(), Some(time::Duration::ZERO));
+    let html = body(response).await;
+    assert!(html.contains(message));
+    // Reloading after the cookie is cleared, or supplying the old query flags,
+    // must not display a success notification.
+    for path in [path.to_owned(), format!("{path}?saved=true&uploaded=true")] {
+        let response = call(config, auth, get(&path)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!body(response).await.contains(message));
+    }
+    html
+}
+
+fn with_cookie(mut request: Request<Body>, cookie: &str) -> Request<Body> {
+    request.headers_mut().insert("cookie", cookie.parse().unwrap());
+    request
+}
+
+async fn echo_notices(request: Request<Body>) -> Json<Notices> {
+    Json(request.extensions().get::<Notices>().unwrap().clone())
+}
+
+async fn notice_extensions_round_trip(_env: Env) {
+    let routes = Router::new()
+        .route(
+            "/send",
+            axum::routing::post(async || {
+                let mut response = Redirect::to("/alpha/receive").into_response();
+                response.extensions_mut().insert(Notices::from([
+                    ("saved", serde_json::json!(true)),
+                    ("uploaded", serde_json::json!(true)),
+                    ("count", serde_json::json!(2)),
+                    ("message", serde_json::json!("保存しました。; =\"% +")),
+                ]));
+                response
+            }),
+        )
+        .route(
+            "/receive",
+            axum::routing::get(echo_notices).post(async |request: Request<Body>| {
+                let mut notices = request.extensions().get::<Notices>().unwrap().clone();
+                notices.0.insert("next".into(), serde_json::json!(true));
+                (Extension(notices), Redirect::to("/alpha/next?view=all"))
+            }),
+        )
+        .route("/receive/child", axum::routing::get(echo_notices))
+        .route("/next", axum::routing::get(echo_notices))
+        .route(
+            "/local",
+            axum::routing::get(echo_notices).post(async || (Extension(Notices::from([("saved", true)])), StatusCode::OK)),
+        )
+        .route("/", axum::routing::get(echo_notices))
+        .route("/empty", axum::routing::get(async || (Extension(Notices::default()), StatusCode::OK)))
+        .layer(axum::middleware::from_fn(notice::middleware));
+    let mut router = Router::new();
+    for name in ["alpha", "beta", "alpha2"] {
+        let project = ProjectState {
+            id: serde_json::from_str("1").unwrap(),
+            name: ProjectName::new(name.into()).unwrap(),
+        };
+        router = router.nest_service(&format!("/{name}"), routes.clone().layer(Extension(project)));
+    }
+    let response = router.call(post("/send", "")).await.unwrap();
+    assert!(response.extensions().get::<Notices>().is_none());
+    let cookie = assert_saved(response).await;
+
+    // The project cookie reaches other pages, but only its exact destination consumes it.
+    for path in [
+        "/alpha",
+        "/alpha/",
+        "/alpha/receive/child",
+        "/alpha/next",
+        "/beta/receive",
+        "/alpha2/receive",
+    ] {
+        let request = Request::builder().uri(format!("https://godoshi.test{path}")).body(Body::empty()).unwrap();
+        let response = router.call(with_cookie(request, &cookie)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key("set-cookie"));
+        assert_eq!(body(response).await, "{}");
+    }
+    let response = router.call(with_cookie(get("/receive"), &cookie)).await.unwrap();
+    assert_eq!(response.headers().get_all("set-cookie").iter().count(), 1);
+    let removed = Cookie::parse(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+    assert_eq!(removed.path(), Some("/alpha"));
+    assert_eq!(removed.max_age(), Some(time::Duration::ZERO));
+    let values: Notices = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(values.0.len(), 4);
+    assert_eq!(values.0["saved"], true);
+    assert_eq!(values.0["uploaded"], true);
+    assert_eq!(values.0["count"], 2);
+    assert_eq!(values.0["message"], "保存しました。; =\"% +");
+    let response = router.call(get("/receive")).await.unwrap();
+    assert!(!response.headers().contains_key("set-cookie"));
+    assert_eq!(body(response).await, "{}");
+
+    // Forwarding replaces the project cookie once, with the new destination and all values.
+    let response = router.call(with_cookie(post("/receive", ""), &cookie)).await.unwrap();
+    let cookies: Vec<_> = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|value| Cookie::parse(value.to_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(cookies.len(), 1);
+    assert_eq!(cookies[0].path(), Some("/alpha"));
+    assert_eq!(cookies[0].max_age(), Some(time::Duration::minutes(5)));
+    let forwarded_cookie = format!("{}={}", cookies[0].name(), cookies[0].value());
+    let response = router.call(with_cookie(get("/receive"), &forwarded_cookie)).await.unwrap();
+    assert!(!response.headers().contains_key("set-cookie"));
+    assert_eq!(body(response).await, "{}");
+    let response = router.call(with_cookie(get("/next?view=all"), &forwarded_cookie)).await.unwrap();
+    assert_eq!(response.headers().get_all("set-cookie").iter().count(), 1);
+    let removed = Cookie::parse(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+    assert_eq!(removed.path(), Some("/alpha"));
+    assert_eq!(removed.max_age(), Some(time::Duration::ZERO));
+    let forwarded: Notices = serde_json::from_str(&body(response).await).unwrap();
+    let mut expected = values;
+    expected.0.insert("next".into(), serde_json::json!(true));
+    assert_eq!(forwarded, expected);
+
+    // Without a redirect, notices target the current page using the same project scope.
+    // An unconsumed notice for another page is replaced by the newly emitted notice.
+    let response = router.call(with_cookie(post("/local", ""), &cookie)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get_all("set-cookie").iter().count(), 1);
+    let cookie = Cookie::parse(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+    assert_eq!(cookie.path(), Some("/alpha"));
+    let cookie = format!("{}={}", cookie.name(), cookie.value());
+    let response = router.call(with_cookie(get("/local"), &cookie)).await.unwrap();
+    let values: Notices = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(values, Notices::from([("saved", true)]));
+
+    // Invalid/old cookie values are discarded, and an empty extension sets no cookie.
+    for invalid in ["saved", "not-json", "%5B%5D"] {
+        let response = router
+            .call(with_cookie(get("/receive"), &format!("godoshi_notice={invalid}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get_all("set-cookie").iter().count(), 1);
+        let removed = Cookie::parse(response.headers()["set-cookie"].to_str().unwrap()).unwrap();
+        assert_eq!(removed.path(), Some("/alpha"));
+        assert_eq!(removed.max_age(), Some(time::Duration::ZERO));
+        assert_eq!(body(response).await, "{}");
+    }
+    let response = router.call(get("/empty")).await.unwrap();
+    assert!(!response.headers().contains_key("set-cookie"));
 }
 
 async fn admin_adds_and_reuses_users(env: Env) {
@@ -170,7 +350,7 @@ async fn admin_adds_and_reuses_users(env: Env) {
         },
     )
     .await;
-    assert_saved(call(&config, &auth, post("/admin/add_user", "username=existing&participant=true")).await).await;
+    let notice_cookie = assert_saved(call(&config, &auth, post("/admin/add_user", "username=existing&participant=true")).await).await;
     assert_eq!(discord_user::rows(&db).await.len(), 3);
     let permissions = project_member::rows(&db).await;
     assert_eq!(
@@ -191,9 +371,7 @@ async fn admin_adds_and_reuses_users(env: Env) {
             permission_set: 1
         }
     );
-    let response = call(&config, &auth, get("/admin?saved=true")).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body(response).await;
+    let html = consume_notice(&config, &auth, "/admin", &notice_cookie, "保存しました。").await;
     assert!(html.contains("<form action=\"/alpha/admin/update_permission\""));
     assert!(html.contains("name=\"user_id\" value=\"3\""));
     assert!(html.contains("保存しました。"));
@@ -388,6 +566,39 @@ async fn root_links_and_redirects(env: Env) {
         let response = call(&config, &auth, get("/")).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(response.headers()["location"], format!("/alpha/{path}"));
+    }
+    for permissions in [
+        UserPermissionSet::ADMIN,
+        UserPermissionSet::REVIEWER,
+        UserPermissionSet::PARTICIPANT,
+        UserPermissionSet::ADMIN | UserPermissionSet::REVIEWER,
+        UserPermissionSet::ADMIN | UserPermissionSet::PARTICIPANT,
+        UserPermissionSet::REVIEWER | UserPermissionSet::PARTICIPANT,
+        UserPermissionSet::all(),
+    ] {
+        auth.permission_set = permissions;
+        for (path, required) in [
+            ("/admin", UserPermissionSet::ADMIN),
+            ("/review", UserPermissionSet::REVIEWER),
+            ("/participant", UserPermissionSet::PARTICIPANT),
+        ] {
+            if permissions.contains(required) {
+                let response = call(&config, &auth, get(path)).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let html = body(response).await;
+                assert_eq!(
+                    html.contains("href=\"/alpha/\""),
+                    permissions.bits().count_ones() >= 2,
+                    "{path}: {permissions:?}"
+                );
+            }
+        }
+    }
+    // Returning from a result to its list is still useful with a single role.
+    for (path, permissions) in [("review", UserPermissionSet::REVIEWER), ("participant", UserPermissionSet::PARTICIPANT)] {
+        auth.permission_set = permissions;
+        let html = body(call(&config, &auth, get(&format!("/{path}/run"))).await).await;
+        assert!(html.contains(&format!("href=\"/alpha/{path}\"")));
     }
 }
 
@@ -610,13 +821,12 @@ async fn participant_uploads_and_replaces_files(env: Env) {
     assert_eq!(bucket.list().execute().await.unwrap().objects().len(), 1);
     // Manuscripts should not hit Axum's default 2 MiB form limit.
     let contents = "x".repeat(2 * 1024 * 1024 + 1);
-    assert_saved(call(&config, &auth, multipart("large.txt", &contents)).await).await;
+    let notice_cookie = assert_saved(call(&config, &auth, multipart("large.txt", &contents)).await).await;
     assert_eq!(
         bucket.head("projects/1/resources/authors/large.txt").await.unwrap().unwrap().size(),
         contents.len() as u64
     );
-    let html = body(call(&config, &auth, get("/participant?uploaded=true")).await).await;
-    assert!(html.contains("アップロードしました。"));
+    let html = consume_notice(&config, &auth, "/participant", &notice_cookie, "アップロードしました。").await;
     assert!(html.contains("enctype=\"multipart/form-data\""));
 }
 
