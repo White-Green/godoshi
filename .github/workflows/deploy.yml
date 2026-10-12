@@ -58,31 +58,25 @@ jobs:
           path: target
           key: ${{ runner.os }}-production-target-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
 
-#      - name: Resolve worker-build version
-#        id: worker-build-version
-#        shell: bash
-#        run: |
-#          VER=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[0].metadata["cargo-binaries"]["worker-build"]')
-#          echo "version=$VER" >> "$GITHUB_OUTPUT"
-#          echo "worker-build ${VER}"
-#
-#      - name: Cache worker-build
-#        id: cache-worker-build
-#        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-#        with:
-#          path: |
-#            ~/.cargo/bin/worker-build
-#          key: ${{ runner.os }}-worker-build-${{ steps.worker-build-version.outputs.version }}
-#
-#      - name: Install worker-build
-#        if: steps.cache-worker-build.outputs.cache-hit != 'true'
-#        shell: bash
-#        run: cargo install worker-build --version "$WORKER_BUILD_VERSION" --locked
-#        env:
-#          WORKER_BUILD_VERSION: ${{ steps.worker-build-version.outputs.version }}
+      - name: Resolve worker-build revision
+        id: worker-build-revision
+        shell: bash
+        run: |
+          SHA=$(git ls-remote --exit-code https://github.com/White-Green/workers-rs refs/heads/codegen | cut -f1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Cache worker-build
+        id: cache-worker-build
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/worker-build
+          key: ${{ runner.os }}-${{ runner.arch }}-worker-build-${{ steps.rust-toolchain.outputs.cachekey }}-${{ steps.worker-build-revision.outputs.sha }}
 
       - name: Install worker-build
-        run: cargo install worker-build --git https://github.com/White-Green/workers-rs --branch codegen --locked
+        if: steps.cache-worker-build.outputs.cache-hit != 'true'
+        run: cargo install worker-build --git https://github.com/White-Green/workers-rs --rev "$WORKER_BUILD_REVISION" --locked
+        env:
+          WORKER_BUILD_REVISION: ${{ steps.worker-build-revision.outputs.sha }}
 
       - uses: cloudflare/wrangler-action@25853364521e0d392ece9b0c1e97a4b37b638087 # v4.1.2
         name: Apply D1 migrations
