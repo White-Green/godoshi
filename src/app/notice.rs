@@ -1,3 +1,5 @@
+use crate::project::ProjectState;
+use axum::Extension;
 use axum::extract::{OriginalUri, Request};
 use axum::http::{Uri, header};
 use axum::middleware::Next;
@@ -13,6 +15,7 @@ const COOKIE_NAME: &str = "godoshi_notice";
 
 /// Request extensions contain the incoming notices. Response extensions contain
 /// notices for the next request, scoped to the redirect destination or current path.
+/// The cookie uses a fixed project Path; its value holds the exact destination path.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(super) struct Notices(pub BTreeMap<String, Value>);
@@ -29,17 +32,24 @@ struct NoticeCookie {
     notices: Notices,
 }
 
-pub(super) async fn middleware(OriginalUri(uri): OriginalUri, mut cookie_jar: CookieJar, mut request: Request, next: Next) -> Response {
+pub(super) async fn middleware(
+    Extension(project): Extension<ProjectState>,
+    OriginalUri(uri): OriginalUri,
+    mut cookie_jar: CookieJar,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let cookie_path = format!("/{}", project.name);
     let mut notices = Notices::default();
     if let Some(cookie) = cookie_jar.get(COOKIE_NAME) {
         match serde_json::from_str::<NoticeCookie>(cookie.value()) {
             Ok(cookie) if cookie.path == uri.path() => {
                 notices = cookie.notices;
-                cookie_jar = cookie_jar.remove(Cookie::build(COOKIE_NAME).path(cookie.path));
+                cookie_jar = cookie_jar.remove(Cookie::build(COOKIE_NAME).path(cookie_path.clone()));
             }
             Ok(_) => {}
             Err(_) => {
-                cookie_jar = cookie_jar.remove(Cookie::build(COOKIE_NAME).path(uri.path().to_owned()));
+                cookie_jar = cookie_jar.remove(Cookie::build(COOKIE_NAME).path(cookie_path.clone()));
             }
         }
     }
@@ -57,10 +67,10 @@ pub(super) async fn middleware(OriginalUri(uri): OriginalUri, mut cookie_jar: Co
         .and_then(|location| location.to_str().ok())
         .and_then(|location| location.parse::<Uri>().ok())
         .map_or_else(|| uri.path().to_owned(), |location| location.path().to_owned());
-    let value = serde_json::to_string(&NoticeCookie { path: path.clone(), notices }).expect("Notices must serialize as JSON");
+    let value = serde_json::to_string(&NoticeCookie { path, notices }).expect("Notices must serialize as JSON");
     let cookie_jar = cookie_jar.add(
         Cookie::build((COOKIE_NAME, value))
-            .path(path)
+            .path(cookie_path)
             .http_only(true)
             .secure(true)
             .same_site(SameSite::Lax)
