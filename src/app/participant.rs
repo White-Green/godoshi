@@ -1,30 +1,41 @@
 use super::notice::Notices;
-use super::results::{self, FileQuery, ResultFile, ResultRun, RunPath};
-use super::{render, storage_error};
+use super::{FilePath, RunPath, bucket_error, render};
 use crate::auth::AuthState;
-use crate::config::GenericConfigProvider;
-use crate::user::UserPermissionSet;
+use crate::core::Config;
+use crate::core::bucket::{
+    Bucket, BucketError, BuildResult, Extension as FileExtension, File, FileObject, ProjectBucket, ResultBucket, UserResourceBucket,
+    UserResultListBucket,
+};
+use crate::core::http::FileResponse;
 use askama::Template;
-use axum::body::{Body, to_bytes};
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::multipart::{MultipartError, MultipartRejection};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Router};
-use smol_str::format_smolstr;
-use worker::{FormEntry, HttpMetadata};
+use futures::StreamExt;
+use smol_str::{SmolStr, format_smolstr};
 
-const MAX_FILE_SIZE: usize = 20 * 1024 * 1024;
-const MAX_FORM_SIZE: usize = MAX_FILE_SIZE + 64 * 1024;
+const INVALID_UPLOAD: (StatusCode, &str) = (StatusCode::BAD_REQUEST, "ファイルを1つ選択してください。");
+const UPLOAD_TOO_LARGE: (StatusCode, &str) = (StatusCode::PAYLOAD_TOO_LARGE, "ファイルは256 MiB以下にしてください。");
+const MAX_UPLOAD_SIZE: usize = 256 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Manuscripts must not exceed 256 MiB")]
+struct UploadTooLarge;
 
 pub fn route<S>() -> Router<S>
 where
-    S: GenericConfigProvider + Clone + Send + Sync + 'static,
+    S: Config + Clone + Send + Sync + 'static,
 {
     Router::new()
         .route("/participant", axum::routing::get(participant::<S>))
-        .route("/participant/upload", axum::routing::post(upload::<S>))
+        .route(
+            "/participant/upload",
+            axum::routing::post(upload::<S>).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE + 64 * 1024)),
+        )
         .route("/participant/{run_id}", axum::routing::get(completed::<S>))
-        .route("/participant/{run_id}/file", axum::routing::get(file::<S>))
+        .route("/participant/{run_id}/file/{*key}", axum::routing::get(file::<S>))
 }
 
 /// ```askama
@@ -38,8 +49,10 @@ where
 /// <h2>完成稿確認</h2>
 /// <ul>
 /// {% for run in runs %}
-///     <li><a href="/{{ project_name }}/participant/{{ run.key }}">{{ run.name }}</a></li>
-/// {% else %}<li>完成稿はまだありません。</li>{% endfor %}
+///     <li><a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
+/// {% else %}
+///     <li>完成稿はまだありません。</li>
+/// {% endfor %}
 /// </ul>
 /// ```
 #[derive(Debug, Template)]
@@ -48,18 +61,18 @@ struct ParticipantTemplate<'a> {
     project_name: &'a str,
     show_project_link: bool,
     uploaded: bool,
-    runs: Vec<ResultRun>,
+    runs: Vec<BuildResult>,
 }
 
 /// ```askama
 /// <p><a href="/{{ project_name }}/participant">一覧に戻る</a></p>
 /// <h1>完成稿確認</h1>
-/// <h2>{{ run.name }}</h2>
+/// <h2>{{ run }}</h2>
 /// <ul>
 /// {% for file in files %}
-///     <li>{{ file.name }} ({{ file.size }} bytes)
-///         <a href="/{{ project_name }}/participant/{{ run.key }}/file?key={{ file.key }}" target="_blank" rel="noopener">閲覧</a>
-///         <a href="/{{ project_name }}/participant/{{ run.key }}/file?key={{ file.key }}&amp;download=true">ダウンロード</a>
+///     <li>{{ file.key }} ({{ file.size }} bytes)
+///         <a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}" target="_blank" rel="noopener">閲覧</a>
+///         <a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}?download=true">ダウンロード</a>
 ///     </li>
 /// {% else %}<li>完成稿はまだありません。</li>{% endfor %}
 /// </ul>
@@ -68,149 +81,182 @@ struct ParticipantTemplate<'a> {
 #[template(ext = "html", in_doc = true)]
 struct CompletedTemplate<'a> {
     project_name: &'a str,
-    run: ResultRun,
-    files: Vec<ResultFile>,
+    run: BuildResult,
+    files: Vec<File>,
 }
 
-#[worker::send]
-async fn participant<S: GenericConfigProvider>(
+async fn participant<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::PARTICIPANT) {
+    if !auth_state.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
-    let username = author_username(&auth_state);
-    let runs = results::list_runs(&state.bucket(), auth_state.project.id, Some(username)).await?;
+    let runs = state
+        .bucket()
+        .project(auth_state.project.id)
+        .result_by_user(auth_state.user.username().clone())
+        .list()
+        .await
+        .map_err(bucket_error)?;
     Ok(render(
         "原稿提出",
         ParticipantTemplate {
             project_name: auth_state.project.name.as_ref(),
-            show_project_link: auth_state.permission_set.bits().count_ones() >= 2,
+            show_project_link: auth_state.user.permissions().bits().count_ones() >= 2,
             uploaded: notices.get("uploaded").and_then(|value| value.as_bool()).unwrap_or_default(),
             runs,
         },
     ))
 }
 
-#[worker::send]
-async fn completed<S: GenericConfigProvider>(
+async fn completed<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Path(RunPath { run_id }): Path<RunPath>,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::PARTICIPANT) {
+    if !auth_state.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
-    let prefix = author_prefix(&auth_state, &run_id)?;
-    let files = results::list_files(&state.bucket(), &prefix).await?;
+    let files = state
+        .bucket()
+        .project(auth_state.project.id)
+        .result_by_user(auth_state.user.username().clone())
+        .result(&run_id)
+        .list()
+        .await
+        .map_err(bucket_error)?;
     Ok(render(
         "完成稿確認",
         CompletedTemplate {
             project_name: auth_state.project.name.as_ref(),
-            run: ResultRun::new(&run_id),
+            run: run_id.into(),
             files,
         },
     ))
 }
 
-#[worker::send]
-async fn file<S: GenericConfigProvider>(
+#[derive(serde::Deserialize)]
+struct DownloadQuery {
+    #[serde(default)]
+    download: bool,
+}
+
+async fn file<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
-    Path(RunPath { run_id }): Path<RunPath>,
-    Query(query): Query<FileQuery>,
-) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::PARTICIPANT) {
+    Path(FilePath { run_id, key }): Path<FilePath>,
+    Query(query): Query<DownloadQuery>,
+) -> Result<FileResponse, (StatusCode, &'static str)> {
+    if !auth_state.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
-    let prefix = author_prefix(&auth_state, &run_id)?;
-    results::serve_file(&state.bucket(), &prefix, query).await
+    let data = state
+        .bucket()
+        .project(auth_state.project.id)
+        .result_by_user(auth_state.user.username().clone())
+        .result(&run_id)
+        .download(&key)
+        .await
+        .map_err(bucket_error)?
+        .ok_or((StatusCode::NOT_FOUND, "ファイルが見つかりません。"))?;
+    Ok(FileResponse {
+        key,
+        data,
+        attachment: query.download,
+    })
 }
 
-fn author_username(auth_state: &AuthState) -> &str {
-    assert!(results::valid_key(&auth_state.username) && !auth_state.username.contains('/'));
-    &auth_state.username
-}
-
-fn author_prefix(auth_state: &AuthState, run_id: &str) -> Result<String, (StatusCode, &'static str)> {
-    let prefix = results::run_prefix(auth_state, run_id)?;
-    let username = author_username(auth_state);
-    let prefix = format!("{prefix}authors/{username}/");
-    if prefix.len() > 1024 {
-        return Err((StatusCode::BAD_REQUEST, "実行IDが不正です。"));
-    }
-    Ok(prefix)
-}
-
-#[worker::send]
-async fn upload<S: GenericConfigProvider>(
+async fn upload<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
-    request: Request,
+    multipart: Result<Multipart, MultipartRejection>,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::PARTICIPANT) {
+    if !auth_state.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
-    // Bound memory before letting the runtime parse the multipart form.
-    let (parts, body) = request.into_parts();
-    let body = to_bytes(body, MAX_FORM_SIZE)
-        .await
-        .map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "ファイルは20 MiB以下にしてください。"))?;
-    let mut request: worker::Request = Request::from_parts(parts, Body::from(body)).try_into().map_err(storage_error)?;
-    let form = request
-        .form_data()
-        .await
-        .map_err(|_| (StatusCode::BAD_REQUEST, "ファイルを選択してください。"))?;
-    let mut files = form.get_all("file").unwrap_or_default();
-    if files.len() != 1 {
-        return Err((StatusCode::BAD_REQUEST, "ファイルを1つ選択してください。"));
-    }
-    let Some(FormEntry::File(file)) = files.pop() else {
-        return Err((StatusCode::BAD_REQUEST, "ファイルを選択してください。"));
-    };
-    let filename = file.name();
-    let extension = std::path::Path::new(&filename)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .filter(|extension| !extension.trim().is_empty());
-    let username = author_username(&auth_state);
-    let prefix = format!("projects/{}/resources/authors/{username}/", auth_state.project.id);
-    let key = match extension {
-        Some(extension) => format!("{prefix}1.{extension}"),
-        None => format!("{prefix}1"),
-    };
-    if key.len() > 1024 || !results::valid_key(&key) {
-        return Err((StatusCode::BAD_REQUEST, "ファイル名が不正です。"));
-    }
-    if file.size() > MAX_FILE_SIZE {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "ファイルは20 MiB以下にしてください。"));
-    }
-    let bytes = file.bytes().await.map_err(storage_error)?;
+    let mut multipart = multipart.map_err(|_| INVALID_UPLOAD)?;
     let bucket = state.bucket();
-    loop {
-        let objects = bucket.list().prefix(&prefix).limit(100).execute().await.map_err(storage_error)?.objects();
-        if objects.is_empty() {
-            break;
-        }
-        bucket
-            .delete_multiple(objects.iter().map(|object| object.key()).collect())
-            .await
-            .map_err(storage_error)?;
-    }
-    bucket
-        .put(key, bytes)
-        .http_metadata(HttpMetadata {
-            content_type: Some("application/octet-stream".into()),
-            ..Default::default()
-        })
-        .execute()
-        .await
-        .map_err(storage_error)?;
+    let project = bucket.project(auth_state.project.id);
+    let resources = project.resource_by_user(auth_state.user.username().clone());
+    upload_file(&resources, &mut multipart).await?;
     Ok((
         Extension(Notices::from([("uploaded", true)])),
         Redirect::to(&format_smolstr!("/{}/participant", auth_state.project.name)),
     )
         .into_response())
+}
+
+fn extract_extension(filename: &str) -> Option<&str> {
+    let filename = filename.rsplit('/').next().unwrap();
+    filename
+        .split_once('.')
+        .filter(|(stem, extension)| !stem.is_empty() && !extension.trim().is_empty())
+        .map(|(_, extension)| extension)
+}
+
+async fn upload_file<B: UserResourceBucket>(resources: &B, multipart: &mut Multipart) -> Result<(), (StatusCode, &'static str)> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| upload_error(BucketError::Read(std::io::Error::other(error))))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().filter(|name| !name.is_empty()).ok_or(INVALID_UPLOAD)?;
+        let extension = extract_extension(filename).map(SmolStr::from);
+        let extension = extension
+            .as_deref()
+            .map(|value| FileExtension::new(value).ok_or(BucketError::InvalidKey))
+            .transpose()
+            .map_err(upload_error)?;
+        let mut size = 0;
+        let data = field.map(move |chunk| {
+            let chunk = chunk.map_err(std::io::Error::other)?;
+            size += chunk.len();
+            if size > MAX_UPLOAD_SIZE {
+                return Err(std::io::Error::other(UploadTooLarge));
+            }
+            Ok(chunk)
+        });
+        let file = B::FileObject::from_data(data.boxed(), extension);
+        return resources.update(vec![file]).await.map_err(upload_error);
+    }
+    Err(INVALID_UPLOAD)
+}
+
+fn upload_error(error: BucketError) -> (StatusCode, &'static str) {
+    if let BucketError::Read(error) = &error
+        && let Some(source) = error.get_ref()
+    {
+        if source.is::<UploadTooLarge>() {
+            return UPLOAD_TOO_LARGE;
+        }
+        if let Some(error) = source.downcast_ref::<MultipartError>() {
+            return match error.status() {
+                StatusCode::PAYLOAD_TOO_LARGE => UPLOAD_TOO_LARGE,
+                status => (status, "アップロードしたファイルを読み込めませんでした。"),
+            };
+        }
+    }
+    bucket_error(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_extension() {
+        assert_eq!(extract_extension("main.pdf"), Some("pdf"));
+        assert_eq!(extract_extension("main"), None);
+        assert_eq!(extract_extension("dir/main.pdf"), Some("pdf"));
+        assert_eq!(extract_extension("dir.name/main.pdf"), Some("pdf"));
+        assert_eq!(extract_extension("dir.name/main"), None);
+        assert_eq!(extract_extension("dir/main.tar.gz"), Some("tar.gz"));
+        assert_eq!(extract_extension("dir.name/main.tar.gz"), Some("tar.gz"));
+        assert_eq!(extract_extension("dir1.name/dir2.name/main.pdf"), Some("pdf"));
+    }
 }

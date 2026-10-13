@@ -1,19 +1,18 @@
-use crate::user::UserId;
 use serde::Deserialize;
 use smol_str::SmolStr;
 use worker::D1Database;
-
-#[cfg(feature = "worker-tests")]
-pub mod tests;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiscordUser {
+pub(super) struct DiscordUser {
     pub id: UserId,
     pub discord_user_id: SmolStr,
     pub discord_username: SmolStr,
 }
+use crate::core::user::UserId;
 
-pub async fn find(db: &D1Database, discord_user_id: SmolStr, discord_username: SmolStr) -> worker::Result<Option<DiscordUser>> {
+#[cfg(feature = "worker-tests")]
+pub mod tests;
+
+pub(super) async fn find(db: &D1Database, discord_user_id: SmolStr, discord_username: SmolStr) -> worker::Result<Option<DiscordUser>> {
     loop {
         let query = worker::query!(
             &db,

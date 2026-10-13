@@ -1,4 +1,4 @@
-use crate::project::ProjectId;
+use crate::core::project::ProjectId;
 use serde::Deserialize;
 use smol_str::SmolStr;
 use worker::D1Database;
