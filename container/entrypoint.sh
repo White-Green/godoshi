@@ -3,6 +3,7 @@ set -euo pipefail
 
 endpoint="${GODOSHI_S3_ENDPOINT:-http://s3.internal}"
 bootstrap_dir="$(mktemp -d)"
+log_path="$(mktemp)"
 trap 'rm -rf -- "$bootstrap_dir"' EXIT
 
 # OutboundHandler maps this key to projects/<project_id>/resources/environment.closure_zstd.
@@ -20,7 +21,13 @@ zstd -d -c "$bootstrap_dir/environment.closure_zstd" \
 
 # Only enter the shell after the entire import succeeds, using its stdout paths.
 echo 'Running godoshi-setup and godoshi-build'
-nix --extra-experimental-features nix-command \
+if ! nix --extra-experimental-features nix-command \
     shell --offline --stdin \
     --command bash -c 'godoshi-setup && exec godoshi-build' \
-    < "$bootstrap_dir/store-paths"
+    < "$bootstrap_dir/store-paths" 2>&1 > "$log_path"; then
+  echo 'build failed' >&2
+fi
+
+aws --endpoint-url "${endpoint%/}" --no-sign-request \
+    --cli-connect-timeout 30 --cli-read-timeout 300 \
+    s3 cp "$log_path" s3://results/build.log
