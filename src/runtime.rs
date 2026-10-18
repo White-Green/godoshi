@@ -140,6 +140,7 @@ fn router(env: Env) -> Router {
     let project_layer = axum::middleware::from_fn_with_state(state.clone(), project::middleware::<AppState>);
     Router::new()
         .nest("/auth", auth::route())
+        .nest("/upload", app::upload::route())
         .nest_service(
             "/{project}",
             app::route(state.clone())
@@ -150,7 +151,7 @@ fn router(env: Env) -> Router {
 }
 
 #[event(fetch)]
-#[tracing::instrument(name = "http_request", skip_all, fields(method = %req.method(), path = req.uri().path()), err)]
+#[tracing::instrument(name = "http_request", skip_all, fields(method = %req.method(), path = request_log_path(req.uri().path())), err)]
 async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum::http::Response<axum::body::Body>> {
     #[cfg(feature = "worker-tests")]
     if req.method() == axum::http::Method::POST && req.uri().path() == "/test" {
@@ -167,6 +168,11 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum
         tracing::info!(status, elapsed_ms, "Request completed");
     }
     Ok(response)
+}
+
+fn request_log_path(path: &str) -> &str {
+    // Upload URLs are bearer credentials; do not include them in application logs.
+    if path.starts_with("/upload/") { "/upload/[redacted]" } else { path }
 }
 
 #[event(fetch, entrypoint = "OutboundHandler")]

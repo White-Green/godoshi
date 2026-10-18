@@ -15,6 +15,7 @@ mod participant;
 mod review;
 mod root;
 mod template;
+pub mod upload;
 
 pub fn route<S>(state: S) -> Router<()>
 where
