@@ -29,6 +29,50 @@ impl ProjectStore for D1Store {
             .await
             .map_err(error)
     }
+    #[worker::send]
+    async fn environment_upload_key(&self, project: ProjectId) -> Result<Option<String>, Self::Error> {
+        worker::query!(&self.0, "select upload_key from environment_upload where project_id = ?", project)
+            .expect("Environment upload query parameters must be valid D1 values")
+            .first(Some("upload_key"))
+            .await
+            .map_err(error)
+    }
+    #[worker::send]
+    async fn create_environment_upload_key(&self, project: ProjectId, key: &str) -> Result<(), Self::Error> {
+        worker::query!(
+            &self.0,
+            "insert into environment_upload (project_id, upload_key) values (?, ?) on conflict (project_id) do nothing",
+            project,
+            key
+        )
+        .expect("Environment upload insert parameters must be valid D1 values")
+        .run()
+        .await
+        .map(|_| ())
+        .map_err(error)
+    }
+    #[worker::send]
+    async fn delete_environment_upload_key(&self, project: ProjectId, key: &str) -> Result<(), Self::Error> {
+        worker::query!(
+            &self.0,
+            "delete from environment_upload where project_id = ? and upload_key = ?",
+            project,
+            key
+        )
+        .expect("Environment upload delete parameters must be valid D1 values")
+        .run()
+        .await
+        .map(|_| ())
+        .map_err(error)
+    }
+    #[worker::send]
+    async fn find_environment_upload_project(&self, key: &str) -> Result<Option<ProjectId>, Self::Error> {
+        worker::query!(&self.0, "select project_id from environment_upload where upload_key = ?", key)
+            .expect("Environment upload lookup parameters must be valid D1 values")
+            .first(Some("project_id"))
+            .await
+            .map_err(error)
+    }
 }
 
 impl UserStore for D1Store {

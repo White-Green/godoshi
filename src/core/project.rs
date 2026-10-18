@@ -83,4 +83,8 @@ impl Project {
 pub trait ProjectStore: Send + Sync {
     type Error: Error + Send + Sync + 'static;
     fn find_project(&self, name: &str) -> impl Future<Output = Result<Option<Project>, Self::Error>> + Send;
+    fn environment_upload_key(&self, project: ProjectId) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send;
+    fn create_environment_upload_key(&self, project: ProjectId, key: &str) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn delete_environment_upload_key(&self, project: ProjectId, key: &str) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn find_environment_upload_project(&self, key: &str) -> impl Future<Output = Result<Option<ProjectId>, Self::Error>> + Send;
 }

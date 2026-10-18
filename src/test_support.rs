@@ -45,6 +45,7 @@ impl Config for TestConfig {
 #[derive(Default)]
 struct Records {
     projects: BTreeMap<u64, project::TestProject>,
+    environment_uploads: BTreeMap<ProjectId, String>,
     users: BTreeMap<u64, discord_user::TestDiscordUser>,
     members: BTreeMap<(u64, u64), project_member::TestProjectMember>,
     next_id: u64,
@@ -77,6 +78,34 @@ impl ProjectStore for MemoryDb {
             id: ProjectId::new(p.id),
             name: ProjectName::new(p.name.clone()).unwrap(),
         }))
+    }
+    async fn environment_upload_key(&self, project: ProjectId) -> Result<Option<String>, Self::Error> {
+        Ok(self.0.lock().unwrap().environment_uploads.get(&project).cloned())
+    }
+    async fn create_environment_upload_key(&self, project: ProjectId, key: &str) -> Result<(), Self::Error> {
+        self.0
+            .lock()
+            .unwrap()
+            .environment_uploads
+            .entry(project)
+            .or_insert_with(|| key.to_owned());
+        Ok(())
+    }
+    async fn delete_environment_upload_key(&self, project: ProjectId, key: &str) -> Result<(), Self::Error> {
+        let mut records = self.0.lock().unwrap();
+        if records.environment_uploads.get(&project).is_some_and(|stored| stored == key) {
+            records.environment_uploads.remove(&project);
+        }
+        Ok(())
+    }
+    async fn find_environment_upload_project(&self, key: &str) -> Result<Option<ProjectId>, Self::Error> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .environment_uploads
+            .iter()
+            .find_map(|(project, stored)| (stored == key).then_some(*project)))
     }
 }
 fn member(row: &project_member::TestProjectMember) -> ProjectMember {

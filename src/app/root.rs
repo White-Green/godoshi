@@ -11,7 +11,7 @@ use smol_str::format_smolstr;
 /// ```askama
 /// <ul>
 /// {% if permissions.contains(UserPermissionSet::ADMIN) %}
-///     <li><a href="/{{ project_name }}/admin">参加者管理</a></li>
+///     <li><a href="/{{ project_name }}/admin">プロジェクト管理</a></li>
 /// {% endif %}
 /// {% if permissions.contains(UserPermissionSet::REVIEWER) %}
 ///     <li><a href="/{{ project_name }}/review">完成稿確認</a></li>
