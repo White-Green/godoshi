@@ -1,6 +1,6 @@
 use crate::app::template::HtmlTemplate;
 use crate::auth::AuthState;
-use crate::user::UserPermissionSet;
+use crate::core::user::UserPermissionSet;
 use askama::Template;
 use axum::body::Body;
 use axum::http::StatusCode;
@@ -29,15 +29,15 @@ struct IndexTemplate<'a> {
 }
 
 pub async fn index(Extension(auth_state): Extension<AuthState>) -> http::Response<Body> {
-    if auth_state.permission_set.is_empty() {
+    if auth_state.user.permissions().is_empty() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    if auth_state.permission_set.bits().count_ones() == 1 {
-        if auth_state.permission_set.contains(UserPermissionSet::ADMIN) {
+    if auth_state.user.permissions().bits().count_ones() == 1 {
+        if auth_state.user.is_admin() {
             return Redirect::to(&format_smolstr!("/{}/admin", auth_state.project.name)).into_response();
-        } else if auth_state.permission_set.contains(UserPermissionSet::PARTICIPANT) {
+        } else if auth_state.user.is_participant() {
             return Redirect::to(&format_smolstr!("/{}/participant", auth_state.project.name)).into_response();
-        } else if auth_state.permission_set.contains(UserPermissionSet::REVIEWER) {
+        } else if auth_state.user.is_reviewer() {
             return Redirect::to(&format_smolstr!("/{}/review", auth_state.project.name)).into_response();
         }
     }
@@ -46,7 +46,7 @@ pub async fn index(Extension(auth_state): Extension<AuthState>) -> http::Respons
             auth_state.project.name.as_ref(),
             IndexTemplate {
                 project_name: auth_state.project.name.as_ref(),
-                permissions: auth_state.permission_set,
+                permissions: auth_state.user.permissions(),
             },
         )
         .render()

@@ -1,8 +1,9 @@
 use super::notice::Notices;
 use super::{render, storage_error};
 use crate::auth::AuthState;
-use crate::config::GenericConfigProvider;
-use crate::user::{UserId, UserPermissionSet};
+use crate::core::Config;
+use crate::core::user::discord::{DiscordInitMemberError, DiscordUserStore};
+use crate::core::user::{ProjectMember, ProjectUserStore, UserId, UserPermissionSet, UserStore, Username};
 use askama::Template;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -13,7 +14,7 @@ use smol_str::format_smolstr;
 
 pub fn route<S>() -> Router<S>
 where
-    S: GenericConfigProvider + Clone + Send + Sync + 'static,
+    S: Config + Clone + Send + Sync + 'static,
 {
     Router::new()
         .route("/admin", axum::routing::get(admin::<S>))
@@ -27,11 +28,11 @@ where
 /// {% if saved %}<p role="status">保存しました。</p>{% endif %}
 /// {% for user in users %}
 /// <form action="/{{ project_name }}/admin/update_permission" method="post">
-///     <div>{{ user.name }} ({{ user.id }})</div>
-///     <input type="hidden" name="user_id" value="{{ user.id }}" />
-///     <label><input type="checkbox" name="admin" value="true" {% if user.permission_set.contains(UserPermissionSet::ADMIN) %}checked{% endif %} />プロジェクト管理者</label>
-///     <label><input type="checkbox" name="reviewer" value="true" {% if user.permission_set.contains(UserPermissionSet::REVIEWER) %}checked{% endif %} />レビュワー</label>
-///     <label><input type="checkbox" name="participant" value="true" {% if user.permission_set.contains(UserPermissionSet::PARTICIPANT) %}checked{% endif %} />寄稿者</label>
+///     <div>{{ user.username() }}</div>
+///     <input type="hidden" name="user_id" value="{{ user.user_id() }}" />
+///     <label><input type="checkbox" name="admin" value="true" {% if user.is_admin() %}checked{% endif %} />プロジェクト管理者</label>
+///     <label><input type="checkbox" name="reviewer" value="true" {% if user.is_reviewer() %}checked{% endif %} />レビュワー</label>
+///     <label><input type="checkbox" name="participant" value="true" {% if user.is_participant() %}checked{% endif %} />寄稿者</label>
 ///     <input type="submit" value="更新" />
 /// </form>
 /// {% else %}<p>参加者はまだいません。</p>{% endfor %}
@@ -49,15 +50,8 @@ where
 struct AdminTemplate<'a> {
     project_name: &'a str,
     show_project_link: bool,
-    users: Vec<AdminUser>,
+    users: Vec<ProjectMember>,
     saved: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminUser {
-    id: u64,
-    name: String,
-    permission_set: UserPermissionSet,
 }
 
 #[derive(Deserialize)]
@@ -97,69 +91,46 @@ struct AddUser {
     permissions: Permissions,
 }
 
-#[worker::send]
-async fn admin<S: GenericConfigProvider>(
+async fn admin<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::ADMIN) {
+    if !auth_state.user.is_admin() {
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
-    let db = state.db();
-    let users = worker::query!(
-        &db,
-        "select p.user_id as id, p.username as name, p.permission_set
-         from project_member p
-         where p.project_id = ? order by name, p.user_id",
-        auth_state.project.id
-    )
-    .expect("Admin query parameters must be valid D1 values")
-    .all()
-    .await
-    .map_err(storage_error)?
-    .results::<AdminUser>()
-    .expect("Admin query results must match the schema");
+    let users = state.users().project(auth_state.project.id).all_member().await.map_err(storage_error)?;
     Ok(render(
         "参加者管理",
         AdminTemplate {
             project_name: auth_state.project.name.as_ref(),
-            show_project_link: auth_state.permission_set.bits().count_ones() >= 2,
+            show_project_link: auth_state.user.permissions().bits().count_ones() >= 2,
             users,
             saved: notices.get("saved").and_then(|value| value.as_bool()).unwrap_or_default(),
         },
     ))
 }
 
-#[worker::send]
-async fn update_permission<S: GenericConfigProvider>(
+async fn update_permission<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Form(form): Form<UpdatePermission>,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::ADMIN) {
+    if !auth_state.user.is_admin() {
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
-    let permissions = if form.user_id == auth_state.user_id {
+    let permissions = if form.user_id == auth_state.user.user_id() {
         form.permissions.permission_set() | UserPermissionSet::ADMIN
     } else {
         form.permissions.permission_set()
     };
-    let db = state.db();
-    // Keep at least one administrator, including when requests arrive concurrently.
-    let updated = worker::query!(
-        &db,
-        "update project_member set permission_set = ? where project_id = ? and user_id = ?
-         returning user_id",
-        permissions,
-        auth_state.project.id,
-        form.user_id
-    )
-    .expect("Permission update parameters must be valid D1 values")
-    .first::<UserId>(Some("user_id"))
-    .await
-    .map_err(storage_error)?;
-    if updated.is_none() {
+    let updated = state
+        .users()
+        .project(auth_state.project.id)
+        .update_permission(form.user_id, permissions)
+        .await
+        .map_err(storage_error)?;
+    if !updated {
         return Err((StatusCode::CONFLICT, "対象の参加者がいません。"));
     }
     Ok((
@@ -169,82 +140,28 @@ async fn update_permission<S: GenericConfigProvider>(
         .into_response())
 }
 
-#[worker::send]
-async fn add_user<S: GenericConfigProvider>(
+async fn add_user<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Form(form): Form<AddUser>,
 ) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.permission_set.contains(UserPermissionSet::ADMIN) {
+    if !auth_state.user.is_admin() {
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
-    let username = form.username.trim();
-    if username.is_empty() || username.len() > 32 || username.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err((StatusCode::BAD_REQUEST, "Discord ユーザー名を入力してください。"));
-    }
-    let permissions = form.permissions.permission_set();
-    let db = state.db();
-    let users = worker::query!(&db, "select id from discord_user where username = ?", username)
-        .expect("Username query parameters must be valid D1 values")
-        .all()
+    let username = Username::new(form.username.trim().into()).ok_or((StatusCode::BAD_REQUEST, "Discord ユーザー名を入力してください。"))?;
+    state
+        .users()
+        .project(auth_state.project.id)
+        .init_member(username, form.permissions.permission_set())
         .await
-        .map_err(storage_error)?
-        .results::<ExistingUser>()
-        .expect("User query results must match the schema");
-    if users.len() > 1 {
-        return Err((StatusCode::CONFLICT, "同名のユーザーが複数存在するため追加できません。"));
-    }
-    // D1 batches are atomic. Reuse an existing Discord account without changing its identity or overwriting permissions when the add form is submitted twice.
-    // ref: https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
-    let results = db
-        .batch(vec![
-            worker::query!(
-                &db,
-                "insert into user (id) select null where not exists (select 1 from discord_user where username = ?)",
-                username
-            )
-            .expect("User insert parameters must be valid D1 values"),
-            worker::query!(
-                &db,
-                "insert into discord_user (id, username) select last_insert_rowid(), ? where changes() = 1",
-                username
-            )
-            .expect("Discord user insert parameters must be valid D1 values"),
-            worker::query!(
-                &db,
-                "insert into project_member (project_id, user_id, username, permission_set)
-                 select ?, id, username, ? from discord_user where username = ?
-                 on conflict (project_id, user_id) do nothing returning user_id",
-                auth_state.project.id,
-                permissions,
-                username
-            )
-            .expect("Project member insert parameters must be valid D1 values"),
-        ])
-        .await
-        .map_err(storage_error)?;
-    if results[2]
-        .results::<AddedUser>()
-        .expect("Project member insert results must match the schema")
-        .is_empty()
-    {
-        return Err((StatusCode::CONFLICT, "すでに参加しているユーザーです。権限は一覧から更新してください。"));
-    }
+        .map_err(|error| match error {
+            DiscordInitMemberError::DuplicatedUsername => (StatusCode::CONFLICT, "同名のユーザーが複数存在するため追加できません。"),
+            DiscordInitMemberError::AlreadyMember => (StatusCode::CONFLICT, "すでに参加しているユーザーです。権限は一覧から更新してください。"),
+            DiscordInitMemberError::Other(error) => storage_error(error),
+        })?;
     Ok((
         Extension(Notices::from([("saved", true)])),
         Redirect::to(&format_smolstr!("/{}/admin", auth_state.project.name)),
     )
         .into_response())
-}
-
-#[derive(Deserialize)]
-struct ExistingUser {
-    #[serde(rename = "id")]
-    _id: UserId,
-}
-
-#[derive(Deserialize)]
-struct AddedUser {
-    #[serde(rename = "user_id")]
-    _user_id: UserId,
 }

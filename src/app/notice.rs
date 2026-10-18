@@ -1,4 +1,4 @@
-use crate::project::ProjectState;
+use crate::core::project::Project;
 use axum::Extension;
 use axum::extract::{OriginalUri, Request};
 use axum::http::{Uri, header};
@@ -33,7 +33,7 @@ struct NoticeCookie {
 }
 
 pub(super) async fn middleware(
-    Extension(project): Extension<ProjectState>,
+    Extension(project): Extension<Project>,
     OriginalUri(uri): OriginalUri,
     mut cookie_jar: CookieJar,
     mut request: Request,
