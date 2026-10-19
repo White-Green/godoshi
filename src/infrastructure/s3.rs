@@ -15,6 +15,7 @@ use s3s::dto::{
 };
 use s3s::{S3, S3Error, S3ErrorCode, S3Request, S3Response, S3Result};
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use std::sync::Arc;
 use worker::send::{SendFuture, SendWrapper};
 use worker::{Bucket, Conditional, D1Database, Data, HttpMetadata};
@@ -357,6 +358,24 @@ impl S3 for S3Bucket {
             {
                 return Err(S3Error::new(S3ErrorCode::NotImplemented));
             }
+            let internal_key = match internal_key {
+                resources::ResourceObject::Stored(key) => key,
+                resources::ResourceObject::Generated(object) => {
+                    let (info, bytes_range, content_range) = generated_read(&object, range, if_match.as_ref(), if_none_match.as_ref())?;
+                    let length = bytes_range.len() as i64;
+                    let bytes = bytes::Bytes::from(object.bytes).slice(bytes_range);
+                    return Ok(S3Response::new(GetObjectOutput {
+                        accept_ranges: Some("bytes".into()),
+                        body: Some(StreamingBlob::from_bytes(bytes)),
+                        content_length: Some(length),
+                        content_range,
+                        content_type: Some("application/json; charset=utf-8".into()),
+                        e_tag: Some(ETag::Strong(info.etag)),
+                        last_modified: Some(info.modified.into()),
+                        ..Default::default()
+                    }));
+                }
+            };
             let mut get_options = self.r2.get(internal_key);
             if let Some(range) = range {
                 get_options = get_options.range(r2_range(range)?);
@@ -481,6 +500,21 @@ impl S3 for S3Bucket {
             {
                 return Err(S3Error::new(S3ErrorCode::NotImplemented));
             }
+            let internal_key = match internal_key {
+                resources::ResourceObject::Stored(key) => key,
+                resources::ResourceObject::Generated(object) => {
+                    let (info, bytes_range, content_range) = generated_read(&object, range, if_match.as_ref(), if_none_match.as_ref())?;
+                    return Ok(S3Response::new(HeadObjectOutput {
+                        accept_ranges: Some("bytes".into()),
+                        content_length: Some(bytes_range.len() as i64),
+                        content_range,
+                        content_type: Some("application/json; charset=utf-8".into()),
+                        e_tag: Some(ETag::Strong(info.etag)),
+                        last_modified: Some(info.modified.into()),
+                        ..Default::default()
+                    }));
+                }
+            };
             let result = self
                 .r2
                 .head(internal_key)
@@ -620,9 +654,9 @@ impl S3 for S3Bucket {
                     match object {
                         Some(object) => contents.push(Object {
                             key: Some(encode(&key)),
-                            size: Some(object.size() as i64),
-                            e_tag: Some(ETag::Strong(object.etag())),
-                            last_modified: Some(timestamp(object.uploaded())?),
+                            size: Some(object.size as i64),
+                            e_tag: Some(ETag::Strong(object.etag)),
+                            last_modified: Some(object.modified.into()),
                             storage_class: Some(ObjectStorageClass::from_static(ObjectStorageClass::STANDARD)),
                             ..Default::default()
                         }),
@@ -861,13 +895,36 @@ fn checked_range(range: s3s::dto::Range, size: u64) -> S3Result<std::ops::Range<
 
 fn check_read_conditions(object: &worker::Object, if_match: Option<&ETagCondition>, if_none_match: Option<&ETagCondition>) -> S3Result<()> {
     let etag = ETag::Strong(object.etag());
-    if if_match.is_some_and(|condition| !etag_matches(condition, &etag, ETag::strong_cmp)) {
+    check_etag_conditions(&etag, if_match, if_none_match)
+}
+
+fn check_etag_conditions(etag: &ETag, if_match: Option<&ETagCondition>, if_none_match: Option<&ETagCondition>) -> S3Result<()> {
+    if if_match.is_some_and(|condition| !etag_matches(condition, etag, ETag::strong_cmp)) {
         return Err(S3Error::new(S3ErrorCode::PreconditionFailed));
     }
-    if if_none_match.is_some_and(|condition| etag_matches(condition, &etag, ETag::weak_cmp)) {
+    if if_none_match.is_some_and(|condition| etag_matches(condition, etag, ETag::weak_cmp)) {
         return Err(S3Error::new(S3ErrorCode::NotModified));
     }
     Ok(())
+}
+
+fn generated_read(
+    object: &resources::GeneratedResource,
+    range: Option<s3s::dto::Range>,
+    if_match: Option<&ETagCondition>,
+    if_none_match: Option<&ETagCondition>,
+) -> S3Result<(resources::ResourceInfo, Range<usize>, Option<String>)> {
+    let info = object.info().map_err(resource_error)?;
+    check_etag_conditions(&ETag::Strong(info.etag.clone()), if_match, if_none_match)?;
+    let (range, content_range) = match range {
+        Some(range) => {
+            let range = checked_range(range, info.size)?;
+            let header = format!("bytes {}-{}/{}", range.start, range.end - 1, info.size);
+            (range.start as usize..range.end as usize, Some(header))
+        }
+        None => (0..object.bytes.len(), None),
+    };
+    Ok((info, range, content_range))
 }
 
 fn etag_matches(condition: &ETagCondition, etag: &ETag, compare: fn(&ETag, &ETag) -> bool) -> bool {

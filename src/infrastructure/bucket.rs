@@ -1,13 +1,14 @@
 use super::s3::S3Bucket;
 use crate::core::bucket::*;
 use crate::core::project::ProjectId;
-use crate::core::user::Username;
+use crate::core::user::{UserId, Username};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use time::OffsetDateTime;
 
+pub(crate) mod metadata;
 pub(crate) mod resources;
 mod upload;
 
@@ -72,6 +73,18 @@ impl Bucket for R2Bucket {
 }
 
 impl ProjectBucket for R2Project<'_> {
+    type MetadataBucket<'a>
+        = metadata::R2AuthorMetadata<'a>
+    where
+        Self: 'a;
+    fn metadata_by_user(&self, user_id: UserId) -> Self::MetadataBucket<'_> {
+        metadata::R2AuthorMetadata {
+            bucket: self.bucket,
+            db: self.db,
+            project_id: self.project_id,
+            user_id,
+        }
+    }
     type ResourceBucket<'a>
         = R2Resource<'a>
     where
@@ -173,7 +186,10 @@ impl ResourceBucket for R2Resource<'_> {
         let Some(key) = resources::resolve(self.scope.db, self.project_id, key).await? else {
             return Ok(None);
         };
-        self.scope.get_physical(&key).await
+        match key {
+            resources::ResourceObject::Stored(key) => self.scope.get_physical(&key).await,
+            resources::ResourceObject::Generated(object) => Ok(Some(object.bytes.into())),
+        }
     }
 }
 

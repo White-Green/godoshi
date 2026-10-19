@@ -6,6 +6,7 @@ use futures::stream::BoxStream;
 use worker::Env;
 
 pub async fn run(context: &mut TestContext) {
+    context.run(metadata_is_scoped_and_published_without_manuscripts).await;
     context.run(lists_are_scoped_to_members).await;
     context.run(resource_lists_reject_invalid_extensions).await;
     context.run(resource_lists_follow_user_ids).await;
@@ -19,6 +20,123 @@ pub async fn run(context: &mut TestContext) {
     context.run(failed_resource_updates_preserve_existing_files).await;
     context.run(stream_uploads_preserve_other_objects_and_failed_replacements).await;
     context.run(stream_uploads_select_single_put_or_larger_parts).await;
+}
+
+async fn metadata_is_scoped_and_published_without_manuscripts(env: Env) {
+    use crate::core::metadata::*;
+    use crate::core::user::UserId;
+    let bucket = bucket(&env).await;
+    let project = bucket.project(ProjectId::new(1));
+    let metadata = project.metadata_by_user(UserId::new(1));
+    assert!(project.resource().download("authors/author/metadata.json").await.unwrap().is_none());
+    let update = MetadataUpdate(std::collections::BTreeMap::from([
+        ("name".into(), MetadataChange::String("白緑".into())),
+        (
+            "icon".into(),
+            MetadataChange::File(MetadataFile::new(Bytes::from_static(b"opaque bytes, not an image"), "original.png".into()).unwrap()),
+        ),
+    ]));
+    metadata.save(update).await.unwrap();
+    assert_eq!(metadata.load().await.unwrap().values["name"], "白緑");
+    assert!(
+        bucket
+            .project(ProjectId::new(2))
+            .metadata_by_user(UserId::new(1))
+            .load()
+            .await
+            .unwrap()
+            .values
+            .is_empty()
+    );
+    assert!(project.metadata_by_user(UserId::new(2)).load().await.unwrap().values.is_empty());
+    assert!(project.metadata_by_user(UserId::new(999)).load().await.is_err());
+
+    let resource = project.resource();
+    let document = text(resource.download("authors/author/metadata.json").await.unwrap().unwrap()).await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&document).unwrap(),
+        serde_json::json!({"icon":"assets/icon.png", "name":"白緑"})
+    );
+    let key = "authors/author/metadata.json";
+
+    // R2 overwrites are independent of D1 writes: there is no rollback on a D1 failure.
+    let db = env.d1("TEST_DB").unwrap();
+    db.prepare("CREATE TRIGGER reject_metadata BEFORE UPDATE ON author_metadata BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        .run()
+        .await
+        .unwrap();
+    let rejected = metadata
+        .save(MetadataUpdate(std::collections::BTreeMap::from([
+            ("name".into(), MetadataChange::String("not published".into())),
+            (
+                "icon".into(),
+                MetadataChange::File(MetadataFile::new(Bytes::from_static(b"overwritten"), "another.png".into()).unwrap()),
+            ),
+        ])))
+        .await;
+    assert!(rejected.is_err());
+    assert_eq!(text(resource.download(key).await.unwrap().unwrap()).await, document);
+    assert_eq!(text(metadata.file("icon").await.unwrap().unwrap().1).await, "overwritten");
+    db.prepare("DROP TRIGGER reject_metadata").run().await.unwrap();
+
+    // Basenames never affect the public name; even an extension change reuses the same R2 key.
+    for (filename, published, bytes) in [("new-name.png", "icon.png", "second"), ("portrait.jpg", "icon.jpg", "last")] {
+        metadata
+            .save(MetadataUpdate(std::collections::BTreeMap::from([(
+                "icon".into(),
+                MetadataChange::File(MetadataFile::new(Bytes::copy_from_slice(bytes.as_bytes()), filename.into()).unwrap()),
+            )])))
+            .await
+            .unwrap();
+        assert_eq!(metadata.load().await.unwrap().files["icon"], published);
+        assert_eq!(
+            text(resource.download(&format!("authors/author/assets/{published}")).await.unwrap().unwrap()).await,
+            bytes
+        );
+        let objects = bucket
+            .bucket
+            .list()
+            .prefix("projects/1/metadata-assets/users/1/")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(objects.objects().len(), 1);
+        assert_eq!(objects.objects()[0].key(), "projects/1/metadata-assets/users/1/icon");
+    }
+    assert!(resource.download("authors/author/assets/icon.png").await.unwrap().is_none());
+
+    // Changes are partial patches, and unrelated data survives manuscript replacement.
+    metadata
+        .save(MetadataUpdate(std::collections::BTreeMap::from([(
+            "name".into(),
+            MetadataChange::String("updated".into()),
+        )])))
+        .await
+        .unwrap();
+    assert!(metadata.load().await.unwrap().files.contains_key("icon"));
+    project
+        .resource_by_user(user("author"))
+        .update(vec![file(data(b"draft"), Some("pdf"))])
+        .await
+        .unwrap();
+    assert_eq!(metadata.load().await.unwrap().values["name"], "updated");
+    metadata
+        .save(MetadataUpdate(std::collections::BTreeMap::from([(
+            "icon".into(),
+            MetadataChange::Remove,
+        )])))
+        .await
+        .unwrap();
+    assert!(resource.download("authors/author/assets/icon.jpg").await.unwrap().is_none());
+    assert!(bucket.bucket.head("projects/1/metadata-assets/users/1/icon").await.unwrap().is_some());
+    assert!(resource.download("authors/author/1.pdf").await.unwrap().is_some());
+
+    db.prepare("UPDATE project_member SET username = 'renamed' WHERE project_id = 1 AND user_id = 1")
+        .run()
+        .await
+        .unwrap();
+    assert!(resource.download(key).await.unwrap().is_none());
+    assert!(resource.download("authors/renamed/metadata.json").await.unwrap().is_some());
 }
 
 fn data(bytes: &[u8]) -> BoxStream<'_, Result<Bytes, std::io::Error>> {

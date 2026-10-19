@@ -224,6 +224,45 @@ export async function runS3CliTests(manifest) {
       const folders = await api("p1", "list-objects-v2", ["--bucket", "resources", "--prefix", "list/", "--delimiter", "/", "--start-after", "list/b.txt"]);
       assert.deepEqual(folders.CommonPrefixes, [{ Prefix: "list/dir/" }]);
     });
+    await test("generated author metadata supports cp, sync, HEAD, ranges and project isolation", async () => {
+      const assetKey = "projects/1/metadata-assets/users/1/icon";
+      const assetName = "icon.bin";
+      const assetPath = `assets/${assetName}`;
+      const assetBytes = await readFile(binary);
+      const metadataR2 = await runtime.getR2Bucket("BUCKET", "s3-api");
+      await metadataR2.put(assetKey, assetBytes);
+      await db.batch([
+        db.prepare("INSERT INTO project (id, name) VALUES (1, 'metadata-book')"),
+        db.prepare("INSERT INTO user (id) VALUES (1)"),
+        db.prepare("INSERT INTO project_member (project_id, user_id, username, permission_set) VALUES (1, 1, 'author', 4)"),
+        db.prepare("INSERT INTO author_metadata (project_id, user_id, values_json, assets, updated_at) VALUES (1, 1, ?, ?, ?)")
+          .bind(JSON.stringify({ display_name: "白緑", afterword: "Thanks\nagain" }),
+            JSON.stringify({ icon: { key: assetKey, filename: assetName } }), Math.floor(Date.now() / 1000)),
+      ]);
+      const key = "authors/author/metadata.json";
+      const output = join(directory, "metadata.json");
+      await aws("p1", ["s3", "cp", `s3://resources/${key}`, output, "--only-show-errors"]);
+      const contents = await readFile(output);
+      assert.deepEqual(JSON.parse(contents), { display_name: "白緑", afterword: "Thanks\nagain", icon: assetPath });
+      const head = await api("p1", "head-object", ["--bucket", "resources", "--key", key]);
+      assert.equal(head.ContentLength, contents.length);
+      assert.equal(head.ContentType, "application/json; charset=utf-8");
+      const list = await api("p1", "list-objects-v2", ["--bucket", "resources", "--prefix", "authors/"]);
+      assert.deepEqual(list.Contents.map((entry) => entry.Key), [`authors/author/${assetPath}`, key]);
+      assert.equal(list.Contents[1].ETag, head.ETag);
+      assert.equal(list.Contents[1].Size, head.ContentLength);
+      const downloads = join(directory, "metadata-sync");
+      await aws("p1", ["s3", "sync", "s3://resources/authors/", downloads, "--only-show-errors"]);
+      assert.deepEqual(await readFile(join(downloads, "author/metadata.json")), contents);
+      assert.deepEqual(await readFile(join(downloads, "author", assetPath)), assetBytes);
+      const range = await api("p1", "get-object", ["--bucket", "resources", "--key", key, "--range", "bytes=0-3", "--if-match", head.ETag, output]);
+      // Workers streams responses, so transfer framing may omit Content-Length.
+      assert.equal(range.ContentRange, `bytes 0-3/${contents.length}`);
+      assert.deepEqual(await readFile(output), contents.subarray(0, 4));
+      await rejected("p1", ["s3api", "get-object", "--bucket", "resources", "--key", key, "--if-none-match", head.ETag, output], "304");
+      await rejected("p2", ["s3api", "head-object", "--bucket", "resources", "--key", key], "404");
+      await rejected("p2", ["s3api", "head-object", "--bucket", "resources", "--key", `authors/author/${assetPath}`], "404");
+    });
     await test("aws s3 cp uploads, overwrites and isolates project/run results", async () => {
       for (const [project, file] of [["p1", input], ["p2", other], ["p1next", input], ["p1", binary]]) {
         await aws(project, ["s3", "cp", file, "s3://results/shared.bin", "--metadata", "origin=aws-cli", "--only-show-errors"]);
