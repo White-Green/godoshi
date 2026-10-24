@@ -1,5 +1,5 @@
 use crate::core::project::ProjectId;
-use crate::core::user::Username;
+use crate::core::user::{UserId, Username};
 use bytes::Bytes;
 use futures::Stream;
 use futures::stream::BoxStream;
@@ -131,6 +131,9 @@ pub trait Bucket: Send + Sync {
 }
 
 pub trait ProjectBucket: Send + Sync {
+    type MetadataBucket<'a>: super::metadata::AuthorMetadataBucket + 'a
+    where
+        Self: 'a;
     type ResourceBucket<'a>: ResourceBucket + 'a
     where
         Self: 'a;
@@ -144,6 +147,7 @@ pub trait ProjectBucket: Send + Sync {
     where
         Self: 'a;
     fn resource(&self) -> Self::ResourceBucket<'_>;
+    fn metadata_by_user(&self, user_id: UserId) -> Self::MetadataBucket<'_>;
     fn resource_by_user(&self, username: Username) -> Self::UserResourceBucket<'_>;
     fn result(&self) -> Self::ResultListBucket<'_>;
     fn result_by_user(&self, username: Username) -> Self::UserResultBucket<'_>;

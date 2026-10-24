@@ -1,7 +1,9 @@
+use crate::core::metadata::MetadataSchema;
 use crate::core::project::{Project, ProjectId, ProjectStore};
 use crate::core::user::discord::{DiscordInitMemberError, DiscordUserStore};
 use crate::core::user::{ProjectMember, ProjectUserStore, UserId, UserPermissionSet, UserStore, Username};
 use smol_str::SmolStr;
+use std::io;
 use worker::D1Database;
 
 pub mod discord;
@@ -15,12 +17,41 @@ pub struct D1ProjectUsers<'a> {
     project: ProjectId,
 }
 
-fn error(error: worker::Error) -> std::io::Error {
-    std::io::Error::other(error.to_string())
+fn error(error: worker::Error) -> io::Error {
+    io::Error::other(error.to_string())
 }
 
 impl ProjectStore for D1Store {
-    type Error = std::io::Error;
+    type Error = io::Error;
+    #[worker::send]
+    async fn metadata_schema(&self, project: ProjectId) -> Result<MetadataSchema, Self::Error> {
+        let definition = worker::query!(&self.0, "SELECT definition FROM project_metadata_schema WHERE project_id = ?", project)
+            .map_err(error)?
+            .first::<String>(Some("definition"))
+            .await
+            .map_err(error)?;
+        definition
+            .map(|json| serde_json::from_str(&json).map_err(io::Error::other))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+    #[worker::send]
+    async fn save_metadata_schema(&self, project: ProjectId, schema: MetadataSchema) -> Result<(), Self::Error> {
+        schema.validate().map_err(io::Error::other)?;
+        let json = serde_json::to_string(&schema).map_err(io::Error::other)?;
+        worker::query!(
+            &self.0,
+            "INSERT INTO project_metadata_schema (project_id, definition) VALUES (?, ?)
+             ON CONFLICT (project_id) DO UPDATE SET definition = excluded.definition",
+            project,
+            json
+        )
+        .map_err(error)?
+        .run()
+        .await
+        .map_err(error)?;
+        Ok(())
+    }
     #[worker::send]
     async fn find_project(&self, name: &str) -> Result<Option<Project>, Self::Error> {
         worker::query!(&self.0, "select id, name from project where name = ?", name)
@@ -83,7 +114,7 @@ impl UserStore for D1Store {
 }
 
 impl ProjectUserStore for D1ProjectUsers<'_> {
-    type Error = std::io::Error;
+    type Error = io::Error;
     #[worker::send]
     async fn find_member(&self, user_id: UserId) -> Result<Option<ProjectMember>, Self::Error> {
         worker::query!(

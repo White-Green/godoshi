@@ -1,4 +1,5 @@
 use crate::core::bucket::*;
+use crate::core::metadata::*;
 use crate::core::project::ProjectId;
 use crate::core::user::{ProjectUserStore, UserId, UserStore, Username};
 use bytes::Bytes;
@@ -12,9 +13,11 @@ use std::sync::{Arc, Mutex};
 pub struct MemoryBucket(Arc<Mutex<MemoryState>>, Arc<AtomicUsize>, super::MemoryDb);
 #[derive(Default)]
 struct MemoryState {
+    metadata: BTreeMap<(ProjectId, UserId), MemoryMetadataRecord>,
     objects: BTreeMap<String, Vec<u8>>,
     lists: BTreeMap<String, (usize, Vec<StoredFile>)>,
 }
+type MemoryMetadataRecord = (AuthorMetadata, BTreeMap<String, Vec<u8>>);
 #[derive(Clone)]
 struct StoredFile {
     key: String,
@@ -132,6 +135,14 @@ impl Bucket for MemoryBucket {
     }
 }
 impl ProjectBucket for Project {
+    type MetadataBucket<'a> = MemoryMetadata;
+    fn metadata_by_user(&self, user_id: UserId) -> MemoryMetadata {
+        MemoryMetadata {
+            bucket: self.bucket.clone(),
+            project: self.project_id,
+            user: user_id,
+        }
+    }
     type ResourceBucket<'a> = Scope;
     type UserResourceBucket<'a> = UserResources;
     type ResultListBucket<'a> = Results;
@@ -226,6 +237,69 @@ impl ResourceBucket for Scope {
             physical = file.1.key.clone();
         }
         Ok(self.bucket.0.lock().unwrap().objects.get(&physical).cloned().map(Data::from))
+    }
+}
+
+pub struct MemoryMetadata {
+    bucket: MemoryBucket,
+    project: ProjectId,
+    user: UserId,
+}
+
+impl AuthorMetadataBucket for MemoryMetadata {
+    async fn load(&self) -> Result<AuthorMetadata, BucketError> {
+        if self.bucket.2.project(self.project).find_member(self.user).await?.is_none() {
+            return Err(BucketError::InvalidFile);
+        }
+        Ok(self
+            .bucket
+            .0
+            .lock()
+            .unwrap()
+            .metadata
+            .get(&(self.project, self.user))
+            .map(|row| row.0.clone())
+            .unwrap_or_default())
+    }
+    async fn save(&self, update: MetadataUpdate) -> Result<(), BucketError> {
+        self.load().await?;
+        update.validate().map_err(|e| BucketError::Read(std::io::Error::other(e)))?;
+        let mut state = self.bucket.0.lock().unwrap();
+        let (metadata, files) = state.metadata.entry((self.project, self.user)).or_default();
+        for (key, change) in update.0 {
+            match change {
+                MetadataChange::String(value) => {
+                    metadata.values.insert(key.clone(), value);
+                    metadata.files.remove(&key);
+                    files.remove(&key);
+                }
+                MetadataChange::File(file) => {
+                    metadata.values.remove(&key);
+                    metadata.files.insert(key.clone(), asset_filename(&key, file.filename()));
+                    files.insert(key, file.bytes().to_vec());
+                }
+                MetadataChange::Remove => {
+                    metadata.values.remove(&key);
+                    metadata.files.remove(&key);
+                    files.remove(&key);
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn file(&self, key: &str) -> Result<Option<(String, Data)>, BucketError> {
+        if !valid_field_key(key) {
+            return Err(BucketError::InvalidKey);
+        }
+        self.load().await?;
+        Ok(self
+            .bucket
+            .0
+            .lock()
+            .unwrap()
+            .metadata
+            .get(&(self.project, self.user))
+            .and_then(|(metadata, files)| Some((metadata.files.get(key)?.clone(), files.get(key)?.clone().into()))))
     }
 }
 impl UserResources {

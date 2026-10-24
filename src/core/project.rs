@@ -1,3 +1,4 @@
+use crate::core::metadata::MetadataSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
 use std::error::Error;
@@ -83,6 +84,8 @@ impl Project {
 pub trait ProjectStore: Send + Sync {
     type Error: Error + Send + Sync + 'static;
     fn find_project(&self, name: &str) -> impl Future<Output = Result<Option<Project>, Self::Error>> + Send;
+    fn metadata_schema(&self, project: ProjectId) -> impl Future<Output = Result<MetadataSchema, Self::Error>> + Send;
+    fn save_metadata_schema(&self, project: ProjectId, schema: MetadataSchema) -> impl Future<Output = Result<(), Self::Error>> + Send;
     fn environment_upload_key(&self, project: ProjectId) -> impl Future<Output = Result<Option<String>, Self::Error>> + Send;
     fn create_environment_upload_key(&self, project: ProjectId, key: &str) -> impl Future<Output = Result<(), Self::Error>> + Send;
     fn delete_environment_upload_key(&self, project: ProjectId, key: &str) -> impl Future<Output = Result<(), Self::Error>> + Send;

@@ -5,8 +5,22 @@ use crate::worker_tests::TestContext;
 use worker::Env;
 
 pub async fn run(context: &mut TestContext) {
+    context.run(metadata_schemas_are_project_specific_and_replaceable).await;
     context.run(test_find_project).await;
     context.run(test_environment_upload_keys).await;
+}
+
+async fn metadata_schemas_are_project_specific_and_replaceable(env: Env) {
+    let store = D1Store(env.d1("TEST_DB").unwrap());
+    let alpha = insert(&store.0, TestProject { id: 1, name: "alpha".into() }).await;
+    let beta = insert(&store.0, TestProject { id: 2, name: "beta".into() }).await;
+    let schema = serde_json::from_str(r#"{"fields":[{"key":"name","label":"Name","type":"string"}]}"#).unwrap();
+    store.save_metadata_schema(alpha, schema).await.unwrap();
+    assert_eq!(store.metadata_schema(alpha).await.unwrap().fields[0].key, "name");
+    assert!(store.metadata_schema(beta).await.unwrap().fields.is_empty());
+    let schema = serde_json::from_str(r#"{"fields":[{"key":"portrait","label":"Portrait","type":"file","accept":"image/*"}]}"#).unwrap();
+    store.save_metadata_schema(alpha, schema).await.unwrap();
+    assert_eq!(store.metadata_schema(alpha).await.unwrap().fields[0].key, "portrait");
 }
 
 async fn test_environment_upload_keys(env: Env) {

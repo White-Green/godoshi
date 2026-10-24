@@ -44,6 +44,7 @@ impl Config for TestConfig {
 
 #[derive(Default)]
 struct Records {
+    metadata_schemas: BTreeMap<ProjectId, crate::core::metadata::MetadataSchema>,
     projects: BTreeMap<u64, project::TestProject>,
     environment_uploads: BTreeMap<ProjectId, String>,
     users: BTreeMap<u64, discord_user::TestDiscordUser>,
@@ -73,6 +74,14 @@ impl UserStore for MemoryDb {
 }
 impl ProjectStore for MemoryDb {
     type Error = std::io::Error;
+    async fn metadata_schema(&self, project: ProjectId) -> Result<crate::core::metadata::MetadataSchema, Self::Error> {
+        Ok(self.0.lock().unwrap().metadata_schemas.get(&project).cloned().unwrap_or_default())
+    }
+    async fn save_metadata_schema(&self, project: ProjectId, schema: crate::core::metadata::MetadataSchema) -> Result<(), Self::Error> {
+        schema.validate().map_err(std::io::Error::other)?;
+        self.0.lock().unwrap().metadata_schemas.insert(project, schema);
+        Ok(())
+    }
     async fn find_project(&self, name: &str) -> Result<Option<Project>, Self::Error> {
         Ok(self.0.lock().unwrap().projects.values().find(|p| p.name == name).map(|p| Project {
             id: ProjectId::new(p.id),

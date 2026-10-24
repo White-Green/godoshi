@@ -16,6 +16,8 @@ use axum::{Extension, Router};
 use futures::StreamExt;
 use smol_str::{SmolStr, format_smolstr};
 
+mod metadata;
+
 const INVALID_UPLOAD: (StatusCode, &str) = (StatusCode::BAD_REQUEST, "ファイルを1つ選択してください。");
 const UPLOAD_TOO_LARGE: (StatusCode, &str) = (StatusCode::PAYLOAD_TOO_LARGE, "ファイルは256 MiB以下にしてください。");
 const MAX_UPLOAD_SIZE: usize = 256 * 1024 * 1024;
@@ -31,6 +33,13 @@ where
     Router::new()
         .route("/participant", axum::routing::get(participant::<S>))
         .route(
+            "/participant/metadata",
+            axum::routing::get(metadata::edit::<S>)
+                .post(metadata::save::<S>)
+                .layer(DefaultBodyLimit::max(metadata::MAX_FORM_BYTES)),
+        )
+        .route("/participant/metadata/assets/{key}", axum::routing::get(metadata::file::<S>))
+        .route(
             "/participant/upload",
             axum::routing::post(upload::<S>).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE + 64 * 1024)),
         )
@@ -41,6 +50,7 @@ where
 /// ```askama
 /// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
 /// <h1>原稿提出</h1>
+/// <p><a href="/{{ project_name }}/participant/metadata">掲載情報の提出</a></p>
 /// {% if uploaded %}<p role="status">アップロードしました。</p>{% endif %}
 /// <form action="/{{ project_name }}/participant/upload" method="post" enctype="multipart/form-data">
 ///     <label>原稿ファイル <input type="file" name="file" required /></label>

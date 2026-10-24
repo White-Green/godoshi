@@ -6,7 +6,7 @@ use crate::core::project::ProjectStore;
 use crate::core::user::discord::{DiscordInitMemberError, DiscordUserStore};
 use crate::core::user::{ProjectMember, ProjectUserStore, UserId, UserPermissionSet, UserStore, Username};
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Form, Router};
@@ -14,12 +14,20 @@ use base64::Engine;
 use serde::Deserialize;
 use smol_str::format_smolstr;
 
+mod metadata;
+
 pub fn route<S>() -> Router<S>
 where
     S: Config + Clone + Send + Sync + 'static,
 {
     Router::new()
         .route("/admin", axum::routing::get(admin::<S>))
+        .route(
+            "/admin/metadata-schema",
+            axum::routing::get(metadata::schema::<S>)
+                .post(metadata::save_schema::<S>)
+                .layer(DefaultBodyLimit::max(metadata::MAX_FORM_BYTES)),
+        )
         .route("/admin/update_permission", axum::routing::post(update_permission::<S>))
         .route("/admin/add_user", axum::routing::post(add_user::<S>))
         .route("/admin/environment_upload/create", axum::routing::post(create_environment_upload::<S>))
@@ -29,6 +37,7 @@ where
 /// ```askama
 /// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
 /// <h1>プロジェクト管理</h1>
+/// <p><a href="/{{ project_name }}/admin/metadata-schema">提出項目の設定</a></p>
 /// {% if saved %}<p role="status">保存しました。</p>{% endif %}
 /// <h2>ビルド環境のアップロード</h2>
 /// {% if let Some(url) = environment_upload_url %}

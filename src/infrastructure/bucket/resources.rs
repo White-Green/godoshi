@@ -5,8 +5,50 @@ use crate::core::user::{UserId, Username};
 use bytes::Bytes;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write;
 use worker::{Bucket, D1Database};
+
+pub(crate) enum ResourceObject {
+    Stored(String),
+    Generated(GeneratedResource),
+}
+
+pub(crate) struct GeneratedResource {
+    pub bytes: Vec<u8>,
+    pub updated_at: i64,
+}
+
+impl GeneratedResource {
+    pub fn info(&self) -> Result<ResourceInfo, BucketError> {
+        Ok(ResourceInfo {
+            size: self.bytes.len() as u64,
+            etag: Sha256::digest(&self.bytes).into_iter().fold(String::new(), |mut s, b| {
+                write!(s, "{:02x}", b).unwrap();
+                s
+            }),
+            modified: time::OffsetDateTime::from_unix_timestamp(self.updated_at).map_err(std::io::Error::other)?,
+        })
+    }
+}
+
+pub(crate) struct ResourceInfo {
+    pub size: u64,
+    pub etag: String,
+    pub modified: time::OffsetDateTime,
+}
+
+impl ResourceInfo {
+    fn stored(object: &worker::Object) -> Result<Self, BucketError> {
+        Ok(Self {
+            size: object.size(),
+            etag: object.etag(),
+            modified: time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(object.uploaded().as_millis()) * 1_000_000)
+                .map_err(std::io::Error::other)?,
+        })
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 struct Entry {
@@ -249,13 +291,28 @@ impl UserResourceBucket for R2UserResources<'_> {
 }
 
 /// Resolve a public, numbered resource path without exposing private object keys.
-pub(crate) async fn resolve(db: &D1Database, project_id: ProjectId, key: &str) -> Result<Option<String>, BucketError> {
+pub(crate) async fn resolve(db: &D1Database, project_id: ProjectId, key: &str) -> Result<Option<ResourceObject>, BucketError> {
     let Some(path) = key.strip_prefix("authors/") else {
-        return Ok(Some(format!("projects/{project_id}/resources/{key}")));
+        return Ok(Some(ResourceObject::Stored(format!("projects/{project_id}/resources/{key}"))));
     };
     let Some((author, name)) = path.split_once('/') else {
         return Ok(None);
     };
+    if name == "metadata.json" || name.starts_with("assets/") {
+        let Some(row) = super::metadata::find(db, project_id, author).await? else {
+            return Ok(None);
+        };
+        if name == "metadata.json" {
+            return Ok(Some(ResourceObject::Generated(GeneratedResource {
+                bytes: row.document()?,
+                updated_at: row.updated_at,
+            })));
+        }
+        return Ok(row
+            .assets()?
+            .into_iter()
+            .find_map(|(_, asset)| (crate::core::metadata::asset_path(&asset.filename) == name).then_some(ResourceObject::Stored(asset.key))));
+    }
     let row = worker::query!(
         db,
         "SELECT r.files FROM resource_file_list r
@@ -274,7 +331,7 @@ pub(crate) async fn resolve(db: &D1Database, project_id: ProjectId, key: &str) -
     let files: Vec<Entry> = serde_json::from_str(&files).map_err(std::io::Error::other)?;
     for (index, file) in files.into_iter().enumerate() {
         if resource_file_key(index, file.extension()) == name {
-            return Ok(Some(file.key));
+            return Ok(Some(ResourceObject::Stored(file.key)));
         }
     }
     Ok(None)
@@ -315,7 +372,7 @@ pub(crate) async fn objects(
     db: &D1Database,
     project_id: ProjectId,
     prefix: ResourceObjectPrefix<'_>,
-) -> Result<BTreeMap<String, worker::Object>, BucketError> {
+) -> Result<BTreeMap<String, ResourceInfo>, BucketError> {
     #[derive(Deserialize)]
     struct ScopedRow {
         user_id: UserId,
@@ -336,12 +393,59 @@ pub(crate) async fn objects(
             let key = object.key();
             let relative = key.strip_prefix(&base).expect("R2 listing is scoped");
             if !relative.starts_with("authors/") {
-                objects.insert(relative.to_owned(), object);
+                objects.insert(relative.to_owned(), ResourceInfo::stored(&object)?);
             }
         }
     }
     if !root_prefix.starts_with("authors/") && !"authors/".starts_with(root_prefix) {
         return Ok(objects);
+    }
+    // Metadata-only authors must appear even before their first manuscript upload.
+    #[derive(Deserialize)]
+    struct MetadataRow {
+        username: String,
+        #[serde(flatten)]
+        metadata: super::metadata::StoredMetadata,
+    }
+    let author_filter = username.as_ref().map(|name| name.as_ref().to_owned());
+    let metadata_rows = worker::query!(
+        db,
+        "SELECT m.username, a.values_json, a.assets, a.updated_at FROM author_metadata a
+         JOIN project_member m ON m.project_id = a.project_id AND m.user_id = a.user_id
+         WHERE a.project_id = ? AND (? IS NULL OR m.username = ?)
+           AND (instr('authors/' || m.username || '/', ?) = 1 OR instr(?, 'authors/' || m.username || '/') = 1)",
+        project_id,
+        author_filter,
+        author_filter,
+        root_prefix,
+        root_prefix
+    )
+    .map_err(error)?
+    .all()
+    .await
+    .map_err(error)?
+    .results::<MetadataRow>()
+    .map_err(error)?;
+    for row in metadata_rows {
+        let author = format!("authors/{}/", row.username);
+        let key = format!("{author}metadata.json");
+        if key.starts_with(root_prefix) && "metadata.json".starts_with(file_prefix) {
+            let generated = GeneratedResource {
+                bytes: row.metadata.document()?,
+                updated_at: row.metadata.updated_at,
+            };
+            objects.insert(key, generated.info()?);
+        }
+        for asset in row.metadata.assets()?.into_values() {
+            let name = crate::core::metadata::asset_path(&asset.filename);
+            let key = format!("{author}{name}");
+            if key.starts_with(root_prefix)
+                && name.starts_with(file_prefix)
+                && let Some(object) = bucket.head(&asset.key).await.map_err(error)?
+            {
+                objects.insert(key, ResourceInfo::stored(&object)?);
+            }
+        }
     }
     let rows = if let Some(username) = &username {
         worker::query!(
@@ -402,7 +506,7 @@ pub(crate) async fn objects(
     for prefix in prefixes {
         for object in physical_objects(bucket, &prefix).await? {
             if let Some(key) = files.remove(&object.key()) {
-                objects.insert(key, object);
+                objects.insert(key, ResourceInfo::stored(&object)?);
             }
         }
     }
