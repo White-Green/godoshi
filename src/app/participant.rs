@@ -1,11 +1,12 @@
 use super::notice::Notices;
-use super::{FilePath, RunPath, bucket_error, render};
+use super::{FilePath, RunPath, bucket_error, render, storage_error};
 use crate::auth::AuthState;
 use crate::core::Config;
 use crate::core::bucket::{
     Bucket, BucketError, BuildResult, Extension as FileExtension, File, FileObject, ProjectBucket, ResultBucket, UserResourceBucket,
     UserResultListBucket,
 };
+use crate::core::build::BuildRequests;
 use crate::core::http::FileResponse;
 use askama::Template;
 use axum::extract::multipart::{MultipartError, MultipartRejection};
@@ -191,6 +192,7 @@ async fn upload<S: Config>(
     let project = bucket.project(auth_state.project.id);
     let resources = project.resource_by_user(auth_state.user.username().clone());
     upload_file(&resources, &mut multipart).await?;
+    state.builds().request(auth_state.project.id).await.map_err(storage_error)?;
     Ok((
         Extension(Notices::from([("uploaded", true)])),
         Redirect::to(&format_smolstr!("/{}/participant", auth_state.project.name)),

@@ -1,8 +1,10 @@
 use crate::auth::discord::AuthSettingProvider;
 use crate::core::Config;
+use crate::core::build::BuildRequest;
 use crate::encrypted_cookie::{EncryptedCookieKey, EncryptedCookieKeyProvider};
 use crate::http::HttpClient;
 use crate::infrastructure::bucket::R2Bucket;
+use crate::infrastructure::build::BuildQueue;
 use crate::infrastructure::container;
 use crate::infrastructure::d1::D1Store;
 use crate::{app, auth, project, s3};
@@ -64,6 +66,14 @@ impl Config for AppState {
     type Projects = D1Store;
     type Users = D1Store;
     type Bucket = R2Bucket;
+    type Builds = BuildQueue;
+
+    fn builds(&self) -> BuildQueue {
+        BuildQueue {
+            db: self.env.d1("DB").expect("DB must be configured"),
+            queue: self.env.queue("JOB_QUEUE").expect("JOB_QUEUE must be configured"),
+        }
+    }
     fn base_url(&self) -> String {
         self.env
             .var("BASE_URL")
@@ -211,19 +221,17 @@ async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Resul
 
 #[event(queue)]
 #[tracing::instrument(name = "queue", skip_all, fields(queue = %message_batch.queue()), err)]
-async fn queue(message_batch: MessageBatch<container::RunRequest>, env: Env, _ctx: Context) -> worker::Result<()> {
-    let received_at = time::OffsetDateTime::now_utc();
+async fn queue(message_batch: MessageBatch<BuildRequest>, env: Env, _ctx: Context) -> worker::Result<()> {
     for message in message_batch.messages()? {
         let message_id = message.id();
-        let name = format!("{}:{message_id}", message_batch.queue());
-        // The queue awaits completion; jobs must fit its 15-minute wall-time limit.
-        match container::run(&env, &name, message.body(), received_at).await {
+        // Waiting for an earlier build plus this build must fit the 15-minute consumer limit.
+        match container::run(&env, message.body()).await {
             Ok(()) => {
                 message.ack();
                 tracing::info!(message_id, "Build message acknowledged");
             }
             Err(error) => {
-                tracing::error!(message_id, %error, "Build failed; retrying queue message");
+                tracing::error!(message_id, %error, "Build request failed; retrying queue message");
                 message.retry();
             }
         }

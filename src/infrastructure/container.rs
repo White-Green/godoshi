@@ -1,25 +1,29 @@
 use crate::core::bucket::ResultKey;
+use crate::core::build::BuildRequest;
+use crate::core::project::ProjectId;
 use crate::s3;
-use serde::{Deserialize, Serialize};
+use coordinator::{BuildTarget, Coordinator};
 use wasm_bindgen::JsCast;
-use worker::{DurableObject, Env, Fetcher, Method, Request, RequestInit, Response, State, durable_object};
+use worker::{D1Database, DurableObject, Env, Fetcher, Method, Request, RequestInit, Response, State, durable_object};
+
+mod coordinator;
 
 const S3_HOST: &str = "s3.internal";
-
-/// Parameters for a container run. The project determines the outbound S3 scope.
-#[derive(Deserialize, Serialize)]
-pub struct RunRequest {
-    pub project_id: u64,
-}
 
 #[durable_object]
 pub struct MyContainer {
     state: State,
+    env: Env,
+    coordinator: Coordinator,
 }
 
 impl DurableObject for MyContainer {
-    fn new(state: State, _env: Env) -> Self {
-        Self { state }
+    fn new(state: State, env: Env) -> Self {
+        Self {
+            state,
+            env,
+            coordinator: Coordinator::default(),
+        }
     }
 
     async fn fetch(&self, mut req: Request) -> worker::Result<Response> {
@@ -29,48 +33,149 @@ impl DurableObject for MyContainer {
         if req.method() != Method::Post {
             return Response::error("Method not allowed", 405);
         }
-        let job: s3::Params = match req.json().await {
+        let job: BuildRequest = match req.json().await {
             Ok(job) => job,
-            Err(_) => return Response::error("A numeric project_id and run_id are required", 400),
+            Err(_) => return Response::error("A numeric project_id and revision are required", 400),
         };
-
-        let container = self
-            .state
-            .container()
-            .ok_or_else(|| worker::Error::RustError("CONTAINER has no container configured".into()))?;
-        let outbound = Fetcher::unchecked_from_js(self.state.exports().get_with_props("OutboundHandler", &job)?);
-        // Install the project-scoped S3 intercept before startup downloads the closure.
-        container.intercept_outbound_http(S3_HOST, &outbound).await?;
-        if !container.running() {
-            container.start(None)?;
-            tracing::info!(project_id = job.project_id, run_id = job.run_id, "Build container started");
-        }
-
-        // Startup errors and non-zero exits reject monitor.
-        container.wait_for_exit().await?;
-        tracing::info!(project_id = job.project_id, run_id = job.run_id, "Build container completed");
+        self.coordinator.run(self, &job).await?;
         Response::empty()
     }
 }
 
-pub async fn run(env: &Env, name: &str, params: &RunRequest, received_at: time::OffsetDateTime) -> worker::Result<()> {
-    let mut random = [0; 8];
-    getrandom::fill(&mut random).map_err(|error| worker::Error::RustError(error.to_string()))?;
-    let params = s3::Params {
-        project_id: params.project_id,
-        // Newer runs sort first when R2 lists keys in ascending order.
-        run_id: ResultKey::for_build(received_at, u64::from_le_bytes(random)).as_str().to_owned(),
-    };
+impl MyContainer {
+    fn container(&self) -> worker::Result<worker::Container> {
+        self.state
+            .container()
+            .ok_or_else(|| worker::Error::RustError("CONTAINER has no container configured".into()))
+    }
+}
+
+impl BuildTarget for MyContainer {
+    type Error = worker::Error;
+
+    async fn pending(&self, job: &BuildRequest) -> worker::Result<bool> {
+        pending(&self.env.d1("DB")?, job).await
+    }
+
+    async fn wait_for_previous(&self) -> worker::Result<()> {
+        let container = self.container()?;
+        if container.running() {
+            let exit_code = container_exit_code(container.wait_for_exit().await)?;
+            if exit_code != 0 {
+                tracing::warn!(exit_code, "Previous build command failed; continuing with the next request");
+            }
+        }
+        Ok(())
+    }
+
+    async fn build_if_pending(&self, job: &BuildRequest) -> worker::Result<()> {
+        let db = self.env.d1("DB")?;
+        if !pending(&db, job).await? {
+            return Ok(());
+        }
+        let mut random = [0; 8];
+        getrandom::fill(&mut random).map_err(|error| worker::Error::RustError(error.to_string()))?;
+        let params = s3::Params {
+            project_id: job.project_id,
+            run_id: ResultKey::for_build(time::OffsetDateTime::now_utc(), u64::from_le_bytes(random))
+                .as_str()
+                .to_owned(),
+        };
+        let container = self.container()?;
+        let outbound = Fetcher::unchecked_from_js(self.state.exports().get_with_props("OutboundHandler", &params)?);
+        container.intercept_outbound_http(S3_HOST, &outbound).await?;
+        if !claim(&db, job).await? {
+            return Ok(());
+        }
+        if let Err(error) = container.start(None) {
+            release(&db, job).await?;
+            return Err(error);
+        }
+        tracing::info!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, "Build container started");
+        match container_exit_code(container.wait_for_exit().await) {
+            Ok(0) => tracing::info!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, "Build container completed"),
+            Ok(exit_code) => {
+                tracing::warn!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, exit_code, "Build command failed");
+            }
+            Err(error) => {
+                tracing::error!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, %error, "Build container lifecycle failed");
+                release(&db, job).await?;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn container_exit_code(result: worker::Result<()>) -> worker::Result<i32> {
+    match result {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            // monitor() marks non-zero process exits with exitCode; other failures remain errors.
+            // https://developers.cloudflare.com/containers/api/durable-object-container/#monitor
+            worker::js_sys::Reflect::get(&error.to_js_value(), &"exitCode".into())
+                .ok()
+                .and_then(|value| value.as_f64())
+                .filter(|code| *code != 0.0 && code.fract() == 0.0 && (i32::MIN as f64..=i32::MAX as f64).contains(code))
+                .map(|code| code as i32)
+                .ok_or(error)
+        }
+    }
+}
+
+pub async fn run(env: &Env, job: &BuildRequest) -> worker::Result<()> {
+    if !pending(&env.d1("DB")?, job).await? {
+        return Ok(());
+    }
     let namespace = env.durable_object("CONTAINER")?;
-    let stub = namespace.id_from_name(name)?.get_stub()?;
-    let body = serde_json::to_string(&params)?;
+    let stub = namespace.id_from_name(&format!("project:{}", job.project_id))?.get_stub()?;
     let request = Request::new_with_init(
         "http://container/run",
-        RequestInit::new().with_method(Method::Post).with_body(Some(body.into())),
+        RequestInit::new()
+            .with_method(Method::Post)
+            .with_body(Some(serde_json::to_string(job)?.into())),
     )?;
     let response = stub.fetch_with_request(request).await?;
     if !(200..300).contains(&response.status_code()) {
         return Err(worker::Error::RustError(format!("Container returned HTTP {}", response.status_code())));
     }
+    Ok(())
+}
+
+pub(super) async fn pending(db: &D1Database, job: &BuildRequest) -> worker::Result<bool> {
+    Ok(worker::query!(
+        db,
+        "SELECT id FROM project WHERE id = ? AND build_revision = ? AND started_build_revision < build_revision",
+        job.project_id,
+        job.revision
+    )?
+    .first::<ProjectId>(Some("id"))
+    .await?
+    .is_some())
+}
+
+pub(super) async fn claim(db: &D1Database, job: &BuildRequest) -> worker::Result<bool> {
+    Ok(worker::query!(
+        db,
+        "UPDATE project SET started_build_revision = build_revision
+         WHERE id = ? AND build_revision = ? AND started_build_revision < build_revision RETURNING id",
+        job.project_id,
+        job.revision
+    )?
+    .first::<ProjectId>(Some("id"))
+    .await?
+    .is_some())
+}
+
+pub(super) async fn release(db: &D1Database, job: &BuildRequest) -> worker::Result<()> {
+    worker::query!(
+        db,
+        "UPDATE project SET started_build_revision = ? WHERE id = ? AND started_build_revision = ?",
+        job.revision - 1,
+        job.project_id,
+        job.revision
+    )?
+    .run()
+    .await?;
     Ok(())
 }

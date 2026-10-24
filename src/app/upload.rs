@@ -1,6 +1,7 @@
 use super::{bucket_error, storage_error};
 use crate::core::Config;
 use crate::core::bucket::{Bucket, ProjectBucket, ResourceBucket};
+use crate::core::build::BuildRequests;
 use crate::core::project::ProjectStore;
 use axum::Router;
 use axum::body::Body;
@@ -29,5 +30,6 @@ async fn upload<S: Config>(State(state): State<S>, Path(key): Path<String>, body
         .upload_environment(body.into_data_stream().map_err(std::io::Error::other))
         .await
         .map_err(bucket_error)?;
+    state.builds().request(project).await.map_err(storage_error)?;
     Ok(StatusCode::NO_CONTENT)
 }

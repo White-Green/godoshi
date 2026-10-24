@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize)]
 pub struct Params {
-    pub project_id: u64,
+    pub project_id: ProjectId,
     pub run_id: String,
 }
 
 pub async fn handle(request: s3s::HttpRequest, bucket: &impl Bucket, params: Params) -> S3Result<s3s::HttpResponse> {
     let key = ResultKey::new(params.run_id).ok_or_else(|| S3Error::new(S3ErrorCode::InvalidArgument))?;
-    let project = bucket.project(ProjectId::new(params.project_id));
+    let project = bucket.project(params.project_id);
     let resources = project.resource().as_s3();
     let results = project.result().result(&key).as_s3();
     S3ServiceBuilder::new(ProjectStorage { resources, results })

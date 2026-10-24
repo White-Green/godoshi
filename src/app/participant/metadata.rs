@@ -3,6 +3,7 @@ use crate::app::{bucket_error, render, storage_error};
 use crate::auth::AuthState;
 use crate::core::Config;
 use crate::core::bucket::{Bucket, ProjectBucket};
+use crate::core::build::BuildRequests;
 use crate::core::http::FileResponse;
 use crate::core::metadata::*;
 use crate::core::project::ProjectStore;
@@ -235,6 +236,7 @@ pub(super) async fn save<S: Config>(
     }
     // Deliberately do not compare the submitted fields to the current schema.
     store.save(update).await.map_err(bucket_error)?;
+    state.builds().request(auth.project.id).await.map_err(storage_error)?;
     Ok((
         Extension(Notices::from([("saved", true)])),
         Redirect::to(&format!("/{}/participant/metadata", auth.project.name)),

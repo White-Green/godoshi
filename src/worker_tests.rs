@@ -79,6 +79,7 @@ async fn reset_database(env: &Env) {
         include_str!("../migrations/0005_resource_files.sql"),
         include_str!("../migrations/0006_environment_upload.sql"),
         include_str!("../migrations/0007_author_metadata.sql"),
+        include_str!("../migrations/0008_build_revision.sql"),
     ];
     let statements = scripts
         .into_iter()

@@ -28,6 +28,10 @@ impl Config for TestConfig {
     type Projects = MemoryDb;
     type Users = MemoryDb;
     type Bucket = MemoryBucket;
+    type Builds = MemoryDb;
+    fn builds(&self) -> MemoryDb {
+        self.db.clone()
+    }
     fn base_url(&self) -> String {
         "https://godoshi.test".into()
     }
@@ -44,6 +48,7 @@ impl Config for TestConfig {
 
 #[derive(Default)]
 struct Records {
+    build_requests: Vec<ProjectId>,
     metadata_schemas: BTreeMap<ProjectId, crate::core::metadata::MetadataSchema>,
     projects: BTreeMap<u64, project::TestProject>,
     environment_uploads: BTreeMap<ProjectId, String>,
@@ -54,11 +59,22 @@ struct Records {
 #[derive(Clone, Default)]
 pub struct MemoryDb(Arc<Mutex<Records>>);
 impl MemoryDb {
+    pub fn build_requests(&self) -> Vec<ProjectId> {
+        self.0.lock().unwrap().build_requests.clone()
+    }
     pub fn rename_member(&self, project: u64, user: u64, name: &str) {
         self.0.lock().unwrap().members.get_mut(&(project, user)).unwrap().username = name.into();
     }
     pub fn rename_discord(&self, user: u64, name: &str) {
         self.0.lock().unwrap().users.get_mut(&user).unwrap().username = name.into();
+    }
+}
+
+impl crate::core::build::BuildRequests for MemoryDb {
+    type Error = std::io::Error;
+    async fn request(&self, project: ProjectId) -> Result<(), Self::Error> {
+        self.0.lock().unwrap().build_requests.push(project);
+        Ok(())
     }
 }
 
