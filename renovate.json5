@@ -1,0 +1,127 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: ["config:recommended"],
+
+  minimumReleaseAge: "3 days",
+
+  lockFileMaintenance: {
+    enabled: true,
+  },
+
+  packageRules: [
+    {
+      description: "Group npm package patch/minor updates into one PR.",
+      matchManagers: ["npm"],
+      matchUpdateTypes: ["patch", "minor"],
+      matchJsonata: ["isBreaking != true"],
+      groupName: "npm package patch/minor updates",
+      groupSlug: "npm-package-patch-minor",
+    },
+    {
+      description: "Group Cargo package patch/minor updates into one PR.",
+      matchManagers: ["cargo"],
+      matchUpdateTypes: ["patch", "minor"],
+      matchJsonata: ["isBreaking != true"],
+      groupName: "Cargo package patch/minor updates",
+      groupSlug: "cargo-package-patch-minor",
+    },
+    {
+      description: "Group binary version pins by binary name, without grouping different binaries together.",
+      matchDepTypes: ["binary"],
+      groupName: "{{{depName}}}",
+      groupSlug: "binary-{{{depName}}}",
+    },
+    {
+      description: "Update the wrangler package and deployment binary pin together.",
+      matchPackageNames: ["wrangler"],
+      groupName: "wrangler",
+      groupSlug: "wrangler",
+    },
+    {
+      description: "Skip Node.js and Go changelogs in dependency update PRs.",
+      matchManagers: ["github-actions"],
+      matchDepTypes: ["uses-with"],
+      matchDepNames: ["node", "go"],
+      fetchChangeLogs: "off",
+    },
+  ],
+
+  customManagers: [
+    // Cargo-installed binaries pinned in [package.metadata.cargo-binaries].
+    {
+      customType: "jsonata",
+      fileFormat: "toml",
+      managerFilePatterns: ["/^Cargo\\.toml$/"],
+      matchStrings: [
+        '$each(package.metadata."cargo-binaries", function($version, $name) { {"depName": $name, "currentValue": $version} })',
+      ],
+      datasourceTemplate: "crate",
+      versioningTemplate: "cargo",
+      depTypeTemplate: "binary",
+    },
+    // actionlint release tag used by the GitHub Actions lint job.
+    {
+      customType: "jsonata",
+      fileFormat: "yaml",
+      managerFilePatterns: ["/^\\.github\\/workflows\\/ci\\.yml$/"],
+      matchStrings: [
+        '{ "depName": "actionlint", "currentValue": jobs."github-actions-lint".env.ACTIONLINT_VERSION }',
+      ],
+      depNameTemplate: "actionlint",
+      packageNameTemplate: "rhysd/actionlint",
+      datasourceTemplate: "github-releases",
+      versioningTemplate: "semver",
+      depTypeTemplate: "binary",
+    },
+
+    // ghalint release tag used by the GitHub Actions lint job.
+    {
+      customType: "jsonata",
+      fileFormat: "yaml",
+      managerFilePatterns: ["/^\\.github\\/workflows\\/ci\\.yml$/"],
+      matchStrings: [
+        '{ "depName": "ghalint", "currentValue": jobs."github-actions-lint".env.GHALINT_VERSION }',
+      ],
+      depNameTemplate: "ghalint",
+      packageNameTemplate: "suzuki-shunsuke/ghalint",
+      datasourceTemplate: "github-releases",
+      versioningTemplate: "semver",
+      depTypeTemplate: "binary",
+    },
+
+    // Wrangler version installed by wrangler-action in the deployment workflow.
+    {
+      customType: "jsonata",
+      fileFormat: "yaml",
+      managerFilePatterns: ["/^\\.github\\/workflows\\/deploy\\.yml$/"],
+      matchStrings: [
+        '{ "depName": "wrangler", "currentValue": env.WRANGLER_VERSION }',
+      ],
+      depNameTemplate: "wrangler",
+      packageNameTemplate: "wrangler",
+      datasourceTemplate: "npm",
+      versioningTemplate: "npm",
+      depTypeTemplate: "binary",
+    },
+
+    // Keep the hash-pinned dtolnay/rust-toolchain action on the master branch.
+    {
+      customType: "jsonata",
+      fileFormat: "yaml",
+      managerFilePatterns: [
+        "/^\\.github\\/(?:workflows|actions)\\/.+\\.ya?ml$/",
+      ],
+      matchStrings: [
+        'jobs.*.steps[$type(uses) = "string" and $contains(uses, /^dtolnay\\/rust-toolchain@[0-9a-f]{40}$/)].{"currentDigest": $substringAfter(uses, "@")}',
+        'runs.steps[$type(uses) = "string" and $contains(uses, /^dtolnay\\/rust-toolchain@[0-9a-f]{40}$/)].{"currentDigest": $substringAfter(uses, "@")}',
+      ],
+      depNameTemplate: "dtolnay/rust-toolchain",
+      packageNameTemplate: "dtolnay/rust-toolchain",
+      currentValueTemplate: "master",
+      datasourceTemplate: "github-digest",
+      versioningTemplate: "exact",
+      depTypeTemplate: "action",
+    },
+  ],
+}
