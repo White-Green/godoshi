@@ -223,7 +223,7 @@ fn invalid_run_id_is_rejected_before_opening_storage() {
                 request("POST", "/results/file?uploads", ""),
                 &bucket,
                 Params {
-                    project_id: 1,
+                    project_id: ProjectId::new(1),
                     run_id: run_id.into(),
                 },
             )

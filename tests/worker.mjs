@@ -16,7 +16,7 @@ export async function runWorkerTests(manifest) {
   });
 
   try {
-    // Exercise only the D1/R2 implementations; application behavior is covered by cargo test.
+    // Exercise Workers bindings and JS interop; application behavior is covered by cargo test.
     const response = await worker.dispatchFetch("http://localhost/test", { method: "POST" });
     const body = await response.text();
     let report;
