@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  WRANGLER_VERSION: "4.136.3"
+  WRANGLER_VERSION: "4.151.3"
 
 permissions:
   contents: read
