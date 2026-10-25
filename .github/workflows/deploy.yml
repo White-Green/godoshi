@@ -78,7 +78,7 @@ jobs:
         env:
           WORKER_BUILD_REVISION: ${{ steps.worker-build-revision.outputs.sha }}
 
-      - uses: cloudflare/wrangler-action@25853364521e0d392ece9b0c1e97a4b37b638087 # v4.1.2
+      - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         name: Apply D1 migrations
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -86,7 +86,7 @@ jobs:
           wranglerVersion: ${{ env.WRANGLER_VERSION }}
           command: d1 migrations apply godoshi-db --remote
 
-      - uses: cloudflare/wrangler-action@25853364521e0d392ece9b0c1e97a4b37b638087 # v4.1.2
+      - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
