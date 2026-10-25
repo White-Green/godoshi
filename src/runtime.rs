@@ -7,6 +7,7 @@ use crate::infrastructure::bucket::R2Bucket;
 use crate::infrastructure::build::BuildQueue;
 use crate::infrastructure::container;
 use crate::infrastructure::d1::D1Store;
+use crate::infrastructure::environment::{EnvironmentUploaded, R2EnvironmentUploads};
 use crate::{app, auth, project, s3};
 use axum::Router;
 use axum::body::Body;
@@ -67,6 +68,11 @@ impl Config for AppState {
     type Users = D1Store;
     type Bucket = R2Bucket;
     type Builds = BuildQueue;
+    type EnvironmentUploads = R2EnvironmentUploads;
+
+    fn environment_uploads(&self) -> R2EnvironmentUploads {
+        R2EnvironmentUploads(self.env.clone())
+    }
 
     fn builds(&self) -> BuildQueue {
         BuildQueue {
@@ -219,19 +225,43 @@ async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Resul
     Ok(response)
 }
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum QueueMessage {
+    Build(BuildRequest),
+    Environment(EnvironmentUploaded),
+}
+
+async fn process_queue_message(message: &QueueMessage, env: &Env) -> worker::Result<()> {
+    match message {
+        QueueMessage::Build(job) => container::run(env, job).await,
+        QueueMessage::Environment(event) => {
+            let state = AppState { env: env.clone() };
+            event
+                .request_build(
+                    &env.var("R2_ACCOUNT_ID")?.to_string(),
+                    &env.var("R2_BUCKET_NAME")?.to_string(),
+                    &state.builds(),
+                )
+                .await
+                .map_err(|error| worker::Error::RustError(error.to_string()))
+        }
+    }
+}
+
 #[event(queue)]
 #[tracing::instrument(name = "queue", skip_all, fields(queue = %message_batch.queue()), err)]
-async fn queue(message_batch: MessageBatch<BuildRequest>, env: Env, _ctx: Context) -> worker::Result<()> {
+async fn queue(message_batch: MessageBatch<QueueMessage>, env: Env, _ctx: Context) -> worker::Result<()> {
     for message in message_batch.messages()? {
         let message_id = message.id();
         // Waiting for an earlier build plus this build must fit the 15-minute consumer limit.
-        match container::run(&env, message.body()).await {
+        match process_queue_message(message.body(), &env).await {
             Ok(()) => {
                 message.ack();
-                tracing::info!(message_id, "Build message acknowledged");
+                tracing::info!(message_id, "Queue message acknowledged");
             }
             Err(error) => {
-                tracing::error!(message_id, %error, "Build request failed; retrying queue message");
+                tracing::error!(message_id, %error, "Queue message processing failed; retrying");
                 message.retry();
             }
         }

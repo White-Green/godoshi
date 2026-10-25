@@ -738,6 +738,7 @@ dependencies = [
  "getrandom 0.4.3",
  "oauth2",
  "percent-encoding",
+ "rusty-s3",
  "s3s",
  "serde",
  "serde_json",
@@ -1060,10 +1061,12 @@ dependencies = [
  "jiff-core",
  "jiff-static",
  "jiff-tzdb-platform",
+ "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -1474,6 +1477,20 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty-s3"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2412ec048709e6a8ee4ee1505313bce003f6b8b27fc41a97e30615223c7ed592"
+dependencies = [
+ "hmac 0.13.0",
+ "jiff",
+ "percent-encoding",
+ "sha2 0.11.1",
+ "url",
+ "zeroize",
+]
 
 [[package]]
 name = "ryu"

@@ -207,9 +207,6 @@ impl ResourceBucket for Scope {
     fn as_s3(&self) -> impl s3s::S3 {
         UnusedS3
     }
-    async fn upload_environment(&self, data: impl Stream<Item = Result<Bytes, std::io::Error>>) -> Result<(), BucketError> {
-        self.put("environment.closure_zstd", data).await
-    }
     async fn download(&self, key: &str) -> Result<Option<Data>, BucketError> {
         let mut physical = self.key(key)?;
         if let Some(path) = key.strip_prefix("authors/") {

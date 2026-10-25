@@ -29,6 +29,10 @@ impl Config for TestConfig {
     type Users = MemoryDb;
     type Bucket = MemoryBucket;
     type Builds = MemoryDb;
+    type EnvironmentUploads = MemoryDb;
+    fn environment_uploads(&self) -> MemoryDb {
+        self.db.clone()
+    }
     fn builds(&self) -> MemoryDb {
         self.db.clone()
     }
@@ -67,6 +71,16 @@ impl MemoryDb {
     }
     pub fn rename_discord(&self, user: u64, name: &str) {
         self.0.lock().unwrap().users.get_mut(&user).unwrap().username = name.into();
+    }
+}
+
+impl crate::core::environment::EnvironmentUploads for MemoryDb {
+    type Error = std::io::Error;
+    fn presign(&self, project: ProjectId) -> Result<crate::core::environment::EnvironmentUpload, Self::Error> {
+        Ok(crate::core::environment::EnvironmentUpload {
+            url: format!("https://r2.test/bucket/projects/{project}/resources/environment.closure_zstd?signature=test"),
+            expires_in: 900,
+        })
     }
 }
 

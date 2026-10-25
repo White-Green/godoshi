@@ -31,3 +31,15 @@ resource "cloudflare_queue" "job_queue" {
   account_id = local.cloudflare_account_id
   queue_name = "godoshi-job-queue"
 }
+
+resource "cloudflare_r2_bucket_event_notification" "environment_upload" {
+  account_id  = local.cloudflare_account_id
+  bucket_name = cloudflare_r2_bucket.runtime_bucket.name
+  queue_id    = cloudflare_queue.job_queue.id
+  rules = [{
+    actions     = ["PutObject"]
+    description = "Build after an environment upload completes"
+    prefix      = "projects/"
+    suffix      = "/resources/environment.closure_zstd"
+  }]
+}

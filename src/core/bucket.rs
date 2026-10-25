@@ -156,10 +156,6 @@ pub trait ProjectBucket: Send + Sync {
 /// ビルドの入力として使うresource
 pub trait ResourceBucket: Send + Sync {
     fn as_s3(&self) -> impl s3s::S3;
-    fn upload_environment(
-        &self,
-        data: impl Stream<Item = Result<Bytes, std::io::Error>> + Send,
-    ) -> impl Future<Output = Result<(), BucketError>> + Send;
     fn download(&self, key: &str) -> impl Future<Output = Result<Option<Data>, BucketError>> + Send;
 }
 

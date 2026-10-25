@@ -41,7 +41,8 @@ where
 /// {% if saved %}<p role="status">保存しました。</p>{% endif %}
 /// <h2>ビルド環境のアップロード</h2>
 /// {% if let Some(url) = environment_upload_url %}
-/// <label>アップロードURL <input type="text" value="{{ url }}" readonly size="100" /></label>
+/// <label>アップロード用URL取得先 <input type="text" value="{{ url }}" readonly size="100" /></label>
+/// <p>このURLへGETし、返されたJSONのurlへファイルをPUTしてください。</p>
 /// <form action="/{{ project_name }}/admin/environment_upload/delete" method="post">
 ///     <input type="hidden" name="upload_key" value="{{ environment_upload_key.as_deref().unwrap_or_default() }}" />
 ///     <input type="submit" value="アップロードURLを削除（無効化）" />
