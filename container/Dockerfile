@@ -1,4 +1,4 @@
-FROM nixos/nix:2.28.7
+FROM nixos/nix:2.35.3
 
 # Resolve bootstrap tools at image build time, before outbound S3 interception is available.
 RUN nix-env -iA nixpkgs.awscli2 nixpkgs.zstd
