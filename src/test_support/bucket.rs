@@ -1,18 +1,22 @@
 use crate::core::bucket::*;
 use crate::core::metadata::*;
+use crate::core::operation_log::{OperationLog, OperationLogEntry, OperationLogPage};
 use crate::core::project::ProjectId;
 use crate::core::user::{ProjectUserStore, UserId, UserStore, Username};
 use bytes::Bytes;
 use futures::stream::BoxStream;
 use futures::{Stream, TryStreamExt};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use time::OffsetDateTime;
 
 #[derive(Clone, Default)]
 pub struct MemoryBucket(Arc<Mutex<MemoryState>>, Arc<AtomicUsize>, super::MemoryDb);
 #[derive(Default)]
 struct MemoryState {
+    logs: BTreeMap<ProjectId, BTreeMap<OffsetDateTime, OperationLog>>,
     metadata: BTreeMap<(ProjectId, UserId), MemoryMetadataRecord>,
     objects: BTreeMap<String, Vec<u8>>,
     lists: BTreeMap<String, (usize, Vec<StoredFile>)>,
@@ -135,6 +139,47 @@ impl Bucket for MemoryBucket {
     }
 }
 impl ProjectBucket for Project {
+    async fn append_log(&self, event: &OperationLog) -> Result<(), BucketError> {
+        self.bucket
+            .0
+            .lock()
+            .unwrap()
+            .logs
+            .entry(self.project_id)
+            .or_default()
+            .insert(OffsetDateTime::now_utc(), event.clone());
+        Ok(())
+    }
+
+    async fn logs(&self, limit: u32, cursor: Option<&str>) -> Result<OperationLogPage, BucketError> {
+        let before = cursor
+            .map(|value| {
+                let nanos = value.parse().map_err(|_| BucketError::InvalidKey)?;
+                OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| BucketError::InvalidKey)
+            })
+            .transpose()?;
+        let state = self.bucket.0.lock().unwrap();
+        let Some(logs) = state.logs.get(&self.project_id) else {
+            return Ok(OperationLogPage {
+                entries: Vec::new(),
+                next_cursor: None,
+            });
+        };
+        let mut logs = logs.range((Unbounded, before.map_or(Unbounded, Excluded))).rev();
+        let entries: Vec<_> = logs
+            .by_ref()
+            .take(limit.clamp(1, 100) as usize)
+            .map(|(&timestamp, event)| OperationLogEntry {
+                timestamp,
+                event: event.clone(),
+            })
+            .collect();
+        let next_cursor = logs
+            .next()
+            .and_then(|_| entries.last().map(|entry| entry.timestamp.unix_timestamp_nanos().to_string()));
+        Ok(OperationLogPage { entries, next_cursor })
+    }
+
     type MetadataBucket<'a> = MemoryMetadata;
     fn metadata_by_user(&self, user_id: UserId) -> MemoryMetadata {
         MemoryMetadata {
@@ -402,9 +447,6 @@ impl UserResourceBucket for UserResources {
 }
 impl ResultListBucket for Results {
     type ResultBucket<'a> = Scope;
-    fn generate_key(&self, now: time::OffsetDateTime) -> Result<ResultKey, BucketError> {
-        Ok(ResultKey::for_build(now, 0))
-    }
     async fn list(&self) -> Result<Vec<BuildResult>, BucketError> {
         let mut runs = BTreeSet::new();
         for key in self.bucket.0.lock().unwrap().objects.keys() {

@@ -1,13 +1,14 @@
 use super::s3::S3Bucket;
 use crate::core::bucket::*;
+use crate::core::operation_log::{OperationLog, OperationLogPage};
 use crate::core::project::ProjectId;
 use crate::core::user::{UserId, Username};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use time::OffsetDateTime;
 
+mod logs;
 pub(crate) mod metadata;
 pub(crate) mod resources;
 mod upload;
@@ -73,6 +74,16 @@ impl Bucket for R2Bucket {
 }
 
 impl ProjectBucket for R2Project<'_> {
+    #[worker::send]
+    async fn append_log(&self, event: &OperationLog) -> Result<(), BucketError> {
+        logs::append(self, event).await
+    }
+
+    #[worker::send]
+    async fn logs(&self, limit: u32, cursor: Option<&str>) -> Result<OperationLogPage, BucketError> {
+        logs::list(self, limit, cursor).await
+    }
+
     type MetadataBucket<'a>
         = metadata::R2AuthorMetadata<'a>
     where
@@ -192,11 +203,6 @@ impl ResultListBucket for R2Results<'_> {
         = R2Result<'a>
     where
         Self: 'a;
-    fn generate_key(&self, now: OffsetDateTime) -> Result<ResultKey, BucketError> {
-        let mut random = [0; 8];
-        getrandom::fill(&mut random).map_err(std::io::Error::other)?;
-        Ok(ResultKey::for_build(now, u64::from_le_bytes(random)))
-    }
     #[worker::send]
     async fn list(&self) -> Result<Vec<BuildResult>, BucketError> {
         let mut cursor = None;

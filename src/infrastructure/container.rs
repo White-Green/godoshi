@@ -1,6 +1,8 @@
-use crate::core::bucket::ResultKey;
+use crate::core::bucket::{Bucket, generate_key};
 use crate::core::build::BuildRequest;
+use crate::core::operation_log::{OperationLog, record};
 use crate::core::project::ProjectId;
+use crate::infrastructure::bucket::R2Bucket;
 use crate::s3;
 use coordinator::{BuildTarget, Coordinator};
 use wasm_bindgen::JsCast;
@@ -73,13 +75,12 @@ impl BuildTarget for MyContainer {
         if !pending(&db, job).await? {
             return Ok(());
         }
-        let mut random = [0; 8];
-        getrandom::fill(&mut random).map_err(|error| worker::Error::RustError(error.to_string()))?;
+        let run_id = generate_key(time::OffsetDateTime::now_utc()).map_err(|error| worker::Error::RustError(error.to_string()))?;
+        let bucket = R2Bucket::new(self.env.bucket("BUCKET")?, self.env.d1("DB")?);
+        let project = bucket.project(job.project_id);
         let params = s3::Params {
             project_id: job.project_id,
-            run_id: ResultKey::for_build(time::OffsetDateTime::now_utc(), u64::from_le_bytes(random))
-                .as_str()
-                .to_owned(),
+            run_id: run_id.as_str().to_owned(),
         };
         let container = self.container()?;
         let outbound = Fetcher::unchecked_from_js(self.state.exports().get_with_props("OutboundHandler", &params)?);
@@ -88,16 +89,34 @@ impl BuildTarget for MyContainer {
             return Ok(());
         }
         if let Err(error) = container.start(None) {
+            record(&project, OperationLog::BuildFailed { run_id, exit_code: None }).await;
             release(&db, job).await?;
             return Err(error);
         }
         tracing::info!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, "Build container started");
-        match container_exit_code(container.wait_for_exit().await) {
-            Ok(0) => tracing::info!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, "Build container completed"),
+        // Start monitoring immediately, even while the log is being persisted.
+        let (_, result) = futures::join!(
+            record(&project, OperationLog::BuildStarted { run_id: run_id.clone() }),
+            container.wait_for_exit(),
+        );
+        match container_exit_code(result) {
+            Ok(0) => {
+                record(&project, OperationLog::BuildSucceeded { run_id }).await;
+                tracing::info!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, "Build container completed");
+            }
             Ok(exit_code) => {
+                record(
+                    &project,
+                    OperationLog::BuildFailed {
+                        run_id,
+                        exit_code: Some(exit_code),
+                    },
+                )
+                .await;
                 tracing::warn!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, exit_code, "Build command failed");
             }
             Err(error) => {
+                record(&project, OperationLog::BuildFailed { run_id, exit_code: None }).await;
                 tracing::error!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, %error, "Build container lifecycle failed");
                 release(&db, job).await?;
                 return Err(error);
