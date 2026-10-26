@@ -1,35 +1,33 @@
-use super::{bucket_error, storage_error};
+use super::storage_error;
 use crate::core::Config;
-use crate::core::bucket::{Bucket, ProjectBucket, ResourceBucket};
-use crate::core::build::BuildRequests;
+use crate::core::environment::{EnvironmentUpload, EnvironmentUploads};
 use crate::core::project::ProjectStore;
-use axum::Router;
-use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use futures::TryStreamExt;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::Response;
+use axum::{Json, Router};
 
 pub fn route<S>() -> Router<S>
 where
     S: Config + Clone + Send + Sync + 'static,
 {
-    Router::new().route("/{key}", axum::routing::put(upload::<S>))
+    Router::new()
+        .route("/{key}", axum::routing::get(presign::<S>))
+        .layer(axum::middleware::map_response(|mut response: Response| async move {
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+            response
+        }))
 }
 
-async fn upload<S: Config>(State(state): State<S>, Path(key): Path<String>, body: Body) -> Result<StatusCode, (StatusCode, &'static str)> {
+async fn presign<S: Config>(State(state): State<S>, Path(key): Path<String>) -> Result<Json<EnvironmentUpload>, (StatusCode, &'static str)> {
     let project = state
         .projects()
         .find_environment_upload_project(&key)
         .await
         .map_err(storage_error)?
         .ok_or((StatusCode::NOT_FOUND, "アップロードURLが無効です。"))?;
-    state
-        .bucket()
-        .project(project)
-        .resource()
-        .upload_environment(body.into_data_stream().map_err(std::io::Error::other))
-        .await
-        .map_err(bucket_error)?;
-    state.builds().request(project).await.map_err(storage_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    let upload = state.environment_uploads().presign(project).map_err(storage_error)?;
+    Ok(Json(upload))
 }

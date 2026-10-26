@@ -17,6 +17,8 @@ command = "worker-build --release"
 
 [vars]
 BASE_URL = "https://godoshi.white-green.net"
+R2_ACCOUNT_ID = "<replace on deployment>"
+R2_BUCKET_NAME = "godoshi-runtime-bucket"
 
 [[containers]]
 class_name = "MyContainer"

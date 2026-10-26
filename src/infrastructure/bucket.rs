@@ -174,12 +174,6 @@ impl ResourceBucket for R2Resource<'_> {
     fn as_s3(&self) -> impl s3s::S3 {
         S3Bucket::resources(self.scope.bucket.clone(), self.scope.db.clone(), self.project_id)
     }
-    fn upload_environment(
-        &self,
-        data: impl Stream<Item = Result<Bytes, std::io::Error>> + Send,
-    ) -> impl Future<Output = Result<(), BucketError>> + Send {
-        self.scope.put("environment.closure_zstd", data)
-    }
     #[worker::send]
     async fn download(&self, key: &str) -> Result<Option<Data>, BucketError> {
         self.scope.key(key)?;

@@ -451,10 +451,10 @@ async fn stream_uploads_preserve_other_objects_and_failed_replacements(env: Env)
         .update(vec![file(data(b"draft"), Some("txt"))])
         .await
         .unwrap();
-    // Environment uploads also stream across multiple parts.
+    // Scoped writes stream across multiple parts.
     let size = 21 * 1024 * 1024 + 19;
-    resources.upload_environment(data_chunks(size)).await.unwrap();
-    let stored = resources.download("environment.closure_zstd").await.unwrap().unwrap();
+    resources.scope.put("streamed.bin", data_chunks(size)).await.unwrap();
+    let stored = resources.download("streamed.bin").await.unwrap().unwrap();
     assert_eq!(stored.size, size as u64);
     assert_eq!(
         stored
@@ -472,8 +472,8 @@ async fn stream_uploads_preserve_other_objects_and_failed_replacements(env: Env)
             .chain(futures::stream::iter([Err(std::io::Error::other("disconnected"))]))
             .boxed()
     };
-    assert!(matches!(resources.upload_environment(broken()).await, Err(BucketError::Read(_))));
-    assert_eq!(resources.download("environment.closure_zstd").await.unwrap().unwrap().size, size as u64);
+    assert!(matches!(resources.scope.put("streamed.bin", broken()).await, Err(BucketError::Read(_))));
+    assert_eq!(resources.download("streamed.bin").await.unwrap().unwrap().size, size as u64);
     assert_eq!(text(resources.download("authors/author/1.txt").await.unwrap().unwrap()).await, "draft");
 
     let results = project.result();
@@ -554,7 +554,13 @@ async fn resources_are_scoped_and_streamed(env: Env) {
     let bucket = bucket(&env).await;
     let project = bucket.project(ProjectId::new(1));
     let other_project = bucket.project(ProjectId::new(2));
-    project.resource().upload_environment(data(b"closure")).await.unwrap();
+    // The environment is uploaded directly to R2, outside the Worker resource API.
+    bucket
+        .bucket
+        .put("projects/1/resources/environment.closure_zstd", b"closure".to_vec())
+        .execute()
+        .await
+        .unwrap();
     assert_eq!(
         text(project.resource().download("environment.closure_zstd").await.unwrap().unwrap()).await,
         "closure"

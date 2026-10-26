@@ -91,4 +91,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: ${{ env.WRANGLER_VERSION }}
-          command: deploy
+          command: deploy --var R2_ACCOUNT_ID:${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
