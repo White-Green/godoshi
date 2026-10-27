@@ -1,5 +1,7 @@
+use crate::core::bucket::Bucket as LogBucket;
 use crate::core::build::BuildRequests;
 use crate::core::environment::{ENVIRONMENT_FILE, EnvironmentUpload, EnvironmentUploads};
+use crate::core::operation_log::{OperationLog, record};
 use crate::core::project::ProjectId;
 use rusty_s3::{Bucket, Credentials, S3Action, UrlStyle};
 use serde::Deserialize;
@@ -77,8 +79,9 @@ impl EnvironmentUploaded {
         (project == id.to_string()).then_some(ProjectId::new(id))
     }
 
-    pub async fn request_build<B: BuildRequests>(&self, account: &str, bucket: &str, builds: &B) -> Result<(), B::Error> {
+    pub async fn request_build<B: BuildRequests>(&self, account: &str, bucket: &str, builds: &B, logs: &impl LogBucket) -> Result<(), B::Error> {
         if let Some(project) = self.project(account, bucket) {
+            record(&logs.project(project), OperationLog::EnvironmentUpdated).await;
             builds.request(project).await?;
         }
         Ok(())

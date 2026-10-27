@@ -242,6 +242,7 @@ async fn process_queue_message(message: &QueueMessage, env: &Env) -> worker::Res
                     &env.var("R2_ACCOUNT_ID")?.to_string(),
                     &env.var("R2_BUCKET_NAME")?.to_string(),
                     &state.builds(),
+                    &state.bucket(),
                 )
                 .await
                 .map_err(|error| worker::Error::RustError(error.to_string()))

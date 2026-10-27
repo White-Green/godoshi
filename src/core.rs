@@ -3,6 +3,7 @@ pub mod build;
 pub mod environment;
 pub mod http;
 pub mod metadata;
+pub mod operation_log;
 pub mod project;
 pub mod user;
 

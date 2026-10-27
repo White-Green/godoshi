@@ -1,7 +1,9 @@
 use super::notice::Notices;
-use super::{render, storage_error};
+use super::{bucket_error, render, storage_error};
 use crate::auth::AuthState;
 use crate::core::Config;
+use crate::core::bucket::{Bucket, ProjectBucket};
+use crate::core::operation_log::OperationLogEntry;
 use crate::core::project::ProjectStore;
 use crate::core::user::discord::{DiscordInitMemberError, DiscordUserStore};
 use crate::core::user::{ProjectMember, ProjectUserStore, UserId, UserPermissionSet, UserStore, Username};
@@ -14,6 +16,7 @@ use base64::Engine;
 use serde::Deserialize;
 use smol_str::format_smolstr;
 
+mod logs;
 mod metadata;
 
 pub fn route<S>() -> Router<S>
@@ -22,6 +25,7 @@ where
 {
     Router::new()
         .route("/admin", axum::routing::get(admin::<S>))
+        .route("/admin/logs", axum::routing::get(logs::index::<S>))
         .route(
             "/admin/metadata-schema",
             axum::routing::get(metadata::schema::<S>)
@@ -39,6 +43,15 @@ where
 /// <h1>プロジェクト管理</h1>
 /// <p><a href="/{{ project_name }}/admin/metadata-schema">提出項目の設定</a></p>
 /// {% if saved %}<p role="status">保存しました。</p>{% endif %}
+/// <h2>操作ログ（最新10件）</h2>
+/// <p><a href="/{{ project_name }}/admin/logs">もっと操作ログを確認</a></p>
+/// <ul>
+/// {% for entry in logs %}
+///     <li>{{ entry.datetime() }} — {{ entry.event }}</li>
+/// {% else %}
+///     <li>操作ログはまだありません。</li>
+/// {% endfor %}
+/// </ul>
 /// <h2>ビルド環境のアップロード</h2>
 /// {% if let Some(url) = environment_upload_url %}
 /// <label>アップロード用URL取得先 <input type="text" value="{{ url }}" readonly size="100" /></label>
@@ -78,6 +91,7 @@ struct AdminTemplate<'a> {
     project_name: &'a str,
     show_project_link: bool,
     users: Vec<ProjectMember>,
+    logs: Vec<OperationLogEntry>,
     saved: bool,
     environment_upload_key: Option<String>,
     environment_upload_url: Option<String>,
@@ -133,6 +147,13 @@ async fn admin<S: Config>(
     if !auth_state.user.is_admin() {
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
+    let logs = state
+        .bucket()
+        .project(auth_state.project.id)
+        .logs(10, None)
+        .await
+        .map_err(bucket_error)?
+        .entries;
     let users = state.users().project(auth_state.project.id).all_member().await.map_err(storage_error)?;
     let environment_upload_key = state
         .projects()
@@ -148,6 +169,7 @@ async fn admin<S: Config>(
             project_name: auth_state.project.name.as_ref(),
             show_project_link: auth_state.user.permissions().bits().count_ones() >= 2,
             users,
+            logs,
             saved: notices.get("saved").and_then(|value| value.as_bool()).unwrap_or_default(),
             environment_upload_key,
             environment_upload_url,

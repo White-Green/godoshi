@@ -8,6 +8,7 @@ use crate::core::bucket::{
 };
 use crate::core::build::BuildRequests;
 use crate::core::http::FileResponse;
+use crate::core::operation_log::{OperationLog, record};
 use askama::Template;
 use axum::extract::multipart::{MultipartError, MultipartRejection};
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
@@ -191,7 +192,16 @@ async fn upload<S: Config>(
     let bucket = state.bucket();
     let project = bucket.project(auth_state.project.id);
     let resources = project.resource_by_user(auth_state.user.username().clone());
-    upload_file(&resources, &mut multipart).await?;
+    let filename = upload_file(&resources, &mut multipart).await?;
+    record(
+        &project,
+        OperationLog::ManuscriptUpdated {
+            user_id: auth_state.user.user_id(),
+            username: auth_state.user.username().clone(),
+            filename,
+        },
+    )
+    .await;
     state.builds().request(auth_state.project.id).await.map_err(storage_error)?;
     Ok((
         Extension(Notices::from([("uploaded", true)])),
@@ -208,7 +218,7 @@ fn extract_extension(filename: &str) -> Option<&str> {
         .map(|(_, extension)| extension)
 }
 
-async fn upload_file<B: UserResourceBucket>(resources: &B, multipart: &mut Multipart) -> Result<(), (StatusCode, &'static str)> {
+async fn upload_file<B: UserResourceBucket>(resources: &B, multipart: &mut Multipart) -> Result<String, (StatusCode, &'static str)> {
     while let Some(field) = multipart
         .next_field()
         .await
@@ -224,6 +234,7 @@ async fn upload_file<B: UserResourceBucket>(resources: &B, multipart: &mut Multi
             .map(|value| FileExtension::new(value).ok_or(BucketError::InvalidKey))
             .transpose()
             .map_err(upload_error)?;
+        let filename = crate::core::bucket::resource_file_key(0, extension);
         let mut size = 0;
         let data = field.map(move |chunk| {
             let chunk = chunk.map_err(std::io::Error::other)?;
@@ -234,7 +245,8 @@ async fn upload_file<B: UserResourceBucket>(resources: &B, multipart: &mut Multi
             Ok(chunk)
         });
         let file = B::FileObject::from_data(data.boxed(), extension);
-        return resources.update(vec![file]).await.map_err(upload_error);
+        resources.update(vec![file]).await.map_err(upload_error)?;
+        return Ok(filename);
     }
     Err(INVALID_UPLOAD)
 }

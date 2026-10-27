@@ -1,3 +1,4 @@
+use crate::core::operation_log::OperationLogPage;
 use crate::core::project::ProjectId;
 use crate::core::user::{UserId, Username};
 use bytes::Bytes;
@@ -49,6 +50,12 @@ pub fn valid_key(key: &str) -> bool {
         && !key.chars().any(char::is_control)
         && !key.contains('\\')
         && key.split('/').all(|part| !matches!(part, "" | "." | ".."))
+}
+
+pub fn generate_key(now: OffsetDateTime) -> Result<ResultKey, BucketError> {
+    let mut random = [0; 8];
+    getrandom::fill(&mut random).map_err(std::io::Error::other)?;
+    Ok(ResultKey::for_build(now, u64::from_le_bytes(random)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -146,6 +153,8 @@ pub trait ProjectBucket: Send + Sync {
     type UserResultBucket<'a>: UserResultListBucket + 'a
     where
         Self: 'a;
+    fn append_log(&self, event: &super::operation_log::OperationLog) -> impl Future<Output = Result<(), BucketError>> + Send;
+    fn logs(&self, limit: u32, cursor: Option<&str>) -> impl Future<Output = Result<OperationLogPage, BucketError>> + Send;
     fn resource(&self) -> Self::ResourceBucket<'_>;
     fn metadata_by_user(&self, user_id: UserId) -> Self::MetadataBucket<'_>;
     fn resource_by_user(&self, username: Username) -> Self::UserResourceBucket<'_>;
@@ -200,7 +209,6 @@ pub trait ResultListBucket: Send + Sync {
     type ResultBucket<'a>: ResultBucket + 'a
     where
         Self: 'a;
-    fn generate_key(&self, now: OffsetDateTime) -> Result<ResultKey, BucketError>;
     fn list(&self) -> impl Future<Output = Result<Vec<BuildResult>, BucketError>> + Send;
     fn result(&self, key: &ResultKey) -> Self::ResultBucket<'_>;
 }

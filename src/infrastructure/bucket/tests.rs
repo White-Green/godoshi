@@ -3,6 +3,7 @@ use crate::test_db::resource_file_list::ResourceFileList;
 use crate::test_db::{discord_user, project, project_member, resource_file_list};
 use crate::worker_tests::TestContext;
 use futures::stream::BoxStream;
+use time::OffsetDateTime;
 use worker::Env;
 
 pub async fn run(context: &mut TestContext) {
@@ -761,16 +762,13 @@ async fn invalid_keys_do_not_escape_scopes(env: Env) {
     assert!(ResultKey::new(format!("998232709354-{}", "1".repeat(1024))).is_none());
     assert!(bucket.bucket.list().execute().await.unwrap().objects().is_empty());
 }
-async fn generated_keys_preserve_build_time(env: Env) {
-    let bucket = bucket(&env).await;
-    let project = bucket.project(ProjectId::new(1));
-    let results = project.result();
+async fn generated_keys_preserve_build_time(_env: Env) {
     let now = OffsetDateTime::from_unix_timestamp(1_767_290_646).unwrap();
-    let first = results.generate_key(now).unwrap();
-    let second = results.generate_key(now + time::Duration::SECOND).unwrap();
+    let first = generate_key(now).unwrap();
+    let second = generate_key(now + time::Duration::SECOND).unwrap();
     assert_eq!(first.built_datetime(), now);
     assert!(second < first);
-    assert_ne!(first, results.generate_key(now).unwrap());
+    assert_ne!(first, generate_key(now).unwrap());
 }
 
 async fn stream_uploads_select_single_put_or_larger_parts(env: Env) {
