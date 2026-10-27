@@ -1,5 +1,5 @@
 // App/auth/project depend on core ports. Runtime composes them with infrastructure.
-// Native tests use test_support; worker-tests exercise only concrete adapters.
+// Native tests and UI previews use test_support; worker-tests exercise only concrete adapters.
 mod app;
 mod auth;
 pub mod core;
@@ -15,5 +15,7 @@ mod test_db;
 #[cfg(feature = "worker-tests")]
 mod worker_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "ui-preview"))]
 mod test_support;
+#[cfg(feature = "ui-preview")]
+mod ui_preview;

@@ -1,0 +1,18 @@
+# npm install, then npm run preview → http://localhost:8787/
+# No secrets, D1, R2, queues, or containers are required.
+# /demo/ contains fixed sample data; /empty/ shows empty states. Writes are disabled.
+compatibility_date = "2026-09-26"
+main = "build-ui-preview/index.js"
+name = "godoshi-ui-preview"
+send_metrics = false
+workers_dev = false
+
+[build]
+command = "npm install && cp node_modules/bootstrap/dist/css/bootstrap.min.css* assets/static/ && cp node_modules/bootstrap/LICENSE assets/static/bootstrap-LICENSE.txt && worker-build --dev --out-dir build-ui-preview --features ui-preview"
+
+[assets]
+directory = "./assets"
+
+[dev]
+ip = "127.0.0.1"
+port = 8787

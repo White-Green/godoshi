@@ -80,6 +80,9 @@ impl MemoryBucket {
         self.1.load(Ordering::SeqCst)
     }
     // Fixture access, intentionally independent of the application-facing traits.
+    pub fn seed_log(&self, project: ProjectId, timestamp: OffsetDateTime, event: OperationLog) {
+        self.0.lock().unwrap().logs.entry(project).or_default().insert(timestamp, event);
+    }
     pub async fn put(&self, key: impl Into<String>, data: impl Into<Vec<u8>>) -> Result<(), std::convert::Infallible> {
         self.0.lock().unwrap().objects.insert(key.into(), data.into());
         Ok(())

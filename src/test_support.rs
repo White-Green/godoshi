@@ -18,10 +18,15 @@ pub fn username(name: &str) -> Username {
 pub struct TestConfig {
     db: MemoryDb,
     bucket: MemoryBucket,
+    base_url: Option<String>,
 }
 impl TestConfig {
     pub fn db(&self) -> MemoryDb {
         self.db.clone()
+    }
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = Some(base_url);
+        self
     }
 }
 impl Config for TestConfig {
@@ -37,7 +42,7 @@ impl Config for TestConfig {
         self.db.clone()
     }
     fn base_url(&self) -> String {
-        "https://godoshi.test".into()
+        self.base_url.clone().unwrap_or_else(|| "https://godoshi.test".into())
     }
     fn projects(&self) -> MemoryDb {
         self.db.clone()
