@@ -50,20 +50,27 @@ where
 }
 
 /// ```askama
-/// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
-/// <h1>原稿提出</h1>
-/// <p><a href="/{{ project_name }}/participant/metadata">掲載情報の提出</a></p>
-/// {% if uploaded %}<p role="status">アップロードしました。</p>{% endif %}
+/// {% if show_project_link %}<p class="mb-4"><a href="/{{ project_name }}/">プロジェクトトップに戻る</a></p>{% endif %}
+/// <h1 class="h2 fw-bold mb-4">原稿提出</h1>
+/// {% if uploaded %}<p class="alert alert-success" role="status">アップロードしました。</p>{% endif %}
+/// <section class="card mb-4"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+///     <div><h2 class="h5">掲載情報</h2><p class="text-body-secondary mb-0">表記名やタイトルなど、掲載に必要な情報を入力します。</p></div>
+///     <a class="btn btn-outline-primary" href="/{{ project_name }}/participant/metadata">掲載情報の提出</a>
+/// </div></section>
+/// <section class="card mb-4"><div class="card-body">
+/// <h2 class="h5 mb-3">原稿ファイルのアップロード</h2>
 /// <form action="/{{ project_name }}/participant/upload" method="post" enctype="multipart/form-data">
-///     <label>原稿ファイル <input type="file" name="file" required /></label>
-///     <input type="submit" value="アップロード" />
+///     <label class="form-label w-100">原稿ファイル <input class="form-control mt-2" type="file" name="file" required aria-describedby="upload-help" /></label>
+///     <p class="form-text" id="upload-help">1ファイル256 MiBまでアップロードできます。</p>
+///     <input class="btn btn-primary" type="submit" value="アップロード" />
 /// </form>
-/// <h2>完成稿確認</h2>
-/// <ul>
+/// </div></section>
+/// <h2 class="h5 mb-3">完成稿確認</h2>
+/// <ul class="list-group">
 /// {% for run in runs %}
-///     <li><a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
+///     <li class="list-group-item p-3 text-break"><a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
 /// {% else %}
-///     <li>完成稿はまだありません。</li>
+///     <li class="list-group-item p-4 text-body-secondary">完成稿はまだありません。</li>
 /// {% endfor %}
 /// </ul>
 /// ```
@@ -77,16 +84,19 @@ struct ParticipantTemplate<'a> {
 }
 
 /// ```askama
-/// <p><a href="/{{ project_name }}/participant">一覧に戻る</a></p>
-/// <h1>完成稿確認</h1>
-/// <h2>{{ run }}</h2>
-/// <ul>
+/// <p class="mb-4"><a href="/{{ project_name }}/participant">一覧に戻る</a></p>
+/// <h1 class="h2 fw-bold mb-4">完成稿確認</h1>
+/// <h2 class="h5 mb-3 text-break">{{ run }}</h2>
+/// <ul class="list-group">
 /// {% for file in files %}
-///     <li>{{ file.key }} ({{ file.size }} bytes)
-///         <a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}" target="_blank" rel="noopener">閲覧</a>
-///         <a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}?download=true">ダウンロード</a>
+///     <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-3 p-3">
+///         <div class="mw-100 text-break"><span class="fw-semibold">{{ file.key }}</span><small class="d-block text-body-secondary">{{ file.size }} bytes</small></div>
+///         <div class="d-flex flex-wrap gap-2">
+///         <a class="btn btn-outline-primary btn-sm" href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}" target="_blank" rel="noopener">閲覧</a>
+///         <a class="btn btn-outline-secondary btn-sm" href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}?download=true">ダウンロード</a>
+///         </div>
 ///     </li>
-/// {% else %}<li>完成稿はまだありません。</li>{% endfor %}
+/// {% else %}<li class="list-group-item p-4 text-body-secondary">完成稿はまだありません。</li>{% endfor %}
 /// </ul>
 /// ```
 #[derive(Debug, Template)]

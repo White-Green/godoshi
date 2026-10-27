@@ -6,6 +6,7 @@
     "test:worker": "node tests/run.mjs"
   },
   "devDependencies": {
+    "bootstrap": "5.3.8",
     "miniflare": "5.20260926.1-alpha",
     "wrangler": "4.152.0"
   }

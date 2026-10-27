@@ -15,6 +15,9 @@ enabled = true
 [build]
 command = "worker-build --release"
 
+[assets]
+directory = "./assets"
+
 [vars]
 BASE_URL = "https://godoshi.white-green.net"
 R2_ACCOUNT_ID = "<replace on deployment>"

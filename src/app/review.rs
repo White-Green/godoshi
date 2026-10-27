@@ -20,12 +20,12 @@ where
 }
 
 /// ```askama
-/// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
-/// <h1>完成稿確認</h1>
-/// <ul>
+/// {% if show_project_link %}<p class="mb-4"><a href="/{{ project_name }}/">プロジェクトトップに戻る</a></p>{% endif %}
+/// <h1 class="h2 fw-bold mb-4">完成稿確認</h1>
+/// <ul class="list-group">
 /// {% for run in runs %}
-///     <li><a href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
-/// {% else %}<li>完成稿はまだありません。</li>{% endfor %}
+///     <li class="list-group-item p-3 text-break"><a href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
+/// {% else %}<li class="list-group-item p-4 text-body-secondary">完成稿はまだありません。</li>{% endfor %}
 /// </ul>
 /// ```
 #[derive(Debug, Template)]
@@ -37,16 +37,19 @@ struct ReviewIndexTemplate<'a> {
 }
 
 /// ```askama
-/// <p><a href="/{{ project_name }}/review">一覧に戻る</a></p>
-/// <h1>完成稿確認</h1>
-/// <h2>{{ run }}</h2>
-/// <ul>
+/// <p class="mb-4"><a href="/{{ project_name }}/review">一覧に戻る</a></p>
+/// <h1 class="h2 fw-bold mb-4">完成稿確認</h1>
+/// <h2 class="h5 mb-3 text-break">{{ run }}</h2>
+/// <ul class="list-group">
 /// {% for file in files %}
-///     <li>{{ file.key }} ({{ file.size }} bytes)
-///         <a href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}" target="_blank" rel="noopener">閲覧</a>
-///         <a href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}?download=true">ダウンロード</a>
+///     <li class="list-group-item d-flex flex-wrap justify-content-between align-items-center gap-3 p-3">
+///         <div class="mw-100 text-break"><span class="fw-semibold">{{ file.key }}</span><small class="d-block text-body-secondary">{{ file.size }} bytes</small></div>
+///         <div class="d-flex flex-wrap gap-2">
+///         <a class="btn btn-outline-primary btn-sm" href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}" target="_blank" rel="noopener">閲覧</a>
+///         <a class="btn btn-outline-secondary btn-sm" href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}/file/{{ file.key|urlencode }}?download=true">ダウンロード</a>
+///         </div>
 ///     </li>
-/// {% else %}<li>完成稿はまだありません。</li>{% endfor %}
+/// {% else %}<li class="list-group-item p-4 text-body-secondary">完成稿はまだありません。</li>{% endfor %}
 /// </ul>
 /// ```
 #[derive(Debug, Template)]

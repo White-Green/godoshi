@@ -9,15 +9,17 @@ use axum::{Extension, http};
 use smol_str::format_smolstr;
 
 /// ```askama
-/// <ul>
+/// <h1 class="h2 fw-bold mb-4 text-break">{{ project_name }}</h1>
+/// <p class="text-body-secondary mb-4">利用する機能を選択してください。</p>
+/// <ul class="list-group shadow-sm">
 /// {% if permissions.contains(UserPermissionSet::ADMIN) %}
-///     <li><a href="/{{ project_name }}/admin">プロジェクト管理</a></li>
+///     <li class="list-group-item p-4"><a class="fw-semibold" href="/{{ project_name }}/admin">プロジェクト管理</a><p class="small text-body-secondary mb-0 mt-1">参加者の権限や提出項目を設定します。</p></li>
 /// {% endif %}
 /// {% if permissions.contains(UserPermissionSet::REVIEWER) %}
-///     <li><a href="/{{ project_name }}/review">完成稿確認</a></li>
+///     <li class="list-group-item p-4"><a class="fw-semibold" href="/{{ project_name }}/review">完成稿確認</a><p class="small text-body-secondary mb-0 mt-1">生成された完成稿の閲覧・ダウンロードができます。</p></li>
 /// {% endif %}
 /// {% if permissions.contains(UserPermissionSet::PARTICIPANT) %}
-///     <li><a href="/{{ project_name }}/participant">原稿提出</a></li>
+///     <li class="list-group-item p-4"><a class="fw-semibold" href="/{{ project_name }}/participant">原稿提出</a><p class="small text-body-secondary mb-0 mt-1">原稿ファイルや掲載情報を提出します。</p></li>
 /// {% endif %}
 /// </ul>
 /// ```

@@ -43,6 +43,12 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.1"
+          package-manager-cache: false
+
       - name: Cache Cargo dependencies
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -85,6 +91,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: ${{ env.WRANGLER_VERSION }}
           command: d1 migrations apply godoshi-db --remote
+
+      - name: Setup assets
+        run: |          
+          npm ci
+          cp node_modules/bootstrap/dist/css/bootstrap.min.css* assets/static/
+          cp node_modules/bootstrap/LICENSE assets/static/bootstrap-LICENSE.txt
 
       - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:

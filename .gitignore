@@ -4,6 +4,7 @@
 !/infrastructure
 !/migrations
 !/src
+!/assets
 !/tests
 !/.gitignore
 !/Cargo.lock
@@ -13,3 +14,8 @@
 !/rustfmt.toml
 !/taplo.toml
 !/wrangler.toml
+
+# Copied from the Bootstrap npm package.
+/assets/static/bootstrap.min.css
+/assets/static/bootstrap.min.css.map
+/assets/static/bootstrap-LICENSE.txt
