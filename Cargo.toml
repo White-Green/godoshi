@@ -8,6 +8,7 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [features]
+ui-preview = []
 worker-tests = []
 
 [package.metadata.cargo-binaries]

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "preview": "wrangler dev --config wrangler.preview.toml --local",
     "test:worker": "node tests/run.mjs"
   },
   "devDependencies": {

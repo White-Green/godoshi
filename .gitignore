@@ -14,6 +14,7 @@
 !/rustfmt.toml
 !/taplo.toml
 !/wrangler.toml
+!/wrangler.preview.toml
 
 # Copied from the Bootstrap npm package.
 /assets/static/bootstrap.min.css

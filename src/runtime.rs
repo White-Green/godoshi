@@ -150,6 +150,7 @@ impl HttpClient for AppState {
     }
 }
 
+#[cfg_attr(feature = "ui-preview", allow(dead_code))]
 fn router(env: Env) -> Router {
     let state = AppState { env };
     let auth_layer = axum::middleware::from_fn_with_state(state.clone(), auth::middleware::<AppState>);
@@ -175,7 +176,13 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum
     }
 
     let started = time::OffsetDateTime::now_utc();
-    let response = router(env).call(req).await?;
+    let response = cfg_select! {
+        feature = "ui-preview" => {{
+            let _ = env;
+            crate::ui_preview::router().await.call(req).await?
+        }}
+        _ => router(env).call(req).await?,
+    };
     let status = response.status().as_u16();
     let elapsed_ms = (time::OffsetDateTime::now_utc() - started).as_seconds_f64() * 1000.0;
     if response.status().is_server_error() {
