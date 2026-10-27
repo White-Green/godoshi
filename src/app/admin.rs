@@ -39,51 +39,72 @@ where
 }
 
 /// ```askama
-/// {% if show_project_link %}<p><a href="/{{ project_name }}/">戻る</a></p>{% endif %}
-/// <h1>プロジェクト管理</h1>
-/// <p><a href="/{{ project_name }}/admin/metadata-schema">提出項目の設定</a></p>
-/// {% if saved %}<p role="status">保存しました。</p>{% endif %}
-/// <h2>操作ログ（最新10件）</h2>
-/// <p><a href="/{{ project_name }}/admin/logs">もっと操作ログを確認</a></p>
-/// <ul>
+/// {% if show_project_link %}<p class="mb-4"><a href="/{{ project_name }}/">プロジェクトトップに戻る</a></p>{% endif %}
+/// <h1 class="h2 fw-bold mb-4">プロジェクト管理</h1>
+/// {% if saved %}<p class="alert alert-success" role="status">保存しました。</p>{% endif %}
+/// <section class="card mb-4"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+///     <div><h2 class="h5">提出項目</h2><p class="text-body-secondary mb-0">表記名やタイトルなど、寄稿者に入力してもらう項目を設定します。</p></div>
+///     <a class="btn btn-outline-primary" href="/{{ project_name }}/admin/metadata-schema">提出項目の設定</a>
+/// </div></section>
+/// <section class="card mb-4" aria-labelledby="recent-logs-heading">
+/// <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+///     <h2 class="h5 mb-0" id="recent-logs-heading">操作ログ（最新10件）</h2>
+///     <a class="btn btn-outline-primary btn-sm" href="/{{ project_name }}/admin/logs">もっと操作ログを確認</a>
+/// </div>
+/// <ul class="list-group list-group-flush">
 /// {% for entry in logs %}
-///     <li>{{ entry.datetime() }} — {{ entry.event }}</li>
+///     <li class="list-group-item px-4 py-3">
+///         <time class="small text-body-secondary d-block">{{ entry.datetime() }}</time>
+///         <div class="text-break">{{ entry.event }}</div>
+///     </li>
 /// {% else %}
-///     <li>操作ログはまだありません。</li>
+///     <li class="list-group-item p-4 text-body-secondary">操作ログはまだありません。</li>
 /// {% endfor %}
 /// </ul>
-/// <h2>ビルド環境のアップロード</h2>
+/// </section>
+/// <section class="card mb-4"><div class="card-body">
+/// <h2 class="h5 mb-3">ビルド環境のアップロード</h2>
 /// {% if let Some(url) = environment_upload_url %}
-/// <label>アップロード用URL取得先 <input type="text" value="{{ url }}" readonly size="100" /></label>
-/// <p>このURLへGETし、返されたJSONのurlへファイルをPUTしてください。</p>
+/// <label class="form-label w-100">アップロード用URL取得先 <input class="form-control mt-2" type="text" value="{{ url }}" readonly /></label>
+/// <ol class="form-text ps-3">
+///     <li>このURLへ<code>GET</code>し、アップロード先を取得します。</li>
+///     <li>返されたJSONの<code>url</code>へ、ビルド環境のファイルを<code>PUT</code>します。</li>
+/// </ol>
 /// <form action="/{{ project_name }}/admin/environment_upload/delete" method="post">
 ///     <input type="hidden" name="upload_key" value="{{ environment_upload_key.as_deref().unwrap_or_default() }}" />
-///     <input type="submit" value="アップロードURLを削除（無効化）" />
+///     <input class="btn btn-outline-danger" type="submit" value="アップロードURLを削除（無効化）" />
 /// </form>
 /// {% else %}
 /// <form action="/{{ project_name }}/admin/environment_upload/create" method="post">
-///     <input type="submit" value="アップロードURLを発行" />
+///     <input class="btn btn-outline-primary" type="submit" value="アップロードURLを発行" />
 /// </form>
 /// {% endif %}
-/// <h2>参加者管理</h2>
+/// </div></section>
+/// <section class="card mb-4"><div class="card-body">
+/// <h2 class="h5 mb-3">参加者管理</h2>
 /// {% for user in users %}
-/// <form action="/{{ project_name }}/admin/update_permission" method="post">
-///     <div>{{ user.username() }}</div>
+/// <form class="border-bottom pb-3 mb-3" action="/{{ project_name }}/admin/update_permission" method="post">
+///     <div class="fw-semibold text-break mb-2">{{ user.username() }}</div>
 ///     <input type="hidden" name="user_id" value="{{ user.user_id() }}" />
-///     <label><input type="checkbox" name="admin" value="true" {% if user.is_admin() %}checked{% endif %} />プロジェクト管理者</label>
-///     <label><input type="checkbox" name="reviewer" value="true" {% if user.is_reviewer() %}checked{% endif %} />レビュワー</label>
-///     <label><input type="checkbox" name="participant" value="true" {% if user.is_participant() %}checked{% endif %} />寄稿者</label>
-///     <input type="submit" value="更新" />
+///     <div class="d-flex flex-wrap align-items-center gap-3">
+///     <label><input class="form-check-input me-2" type="checkbox" name="admin" value="true" {% if user.is_admin() %}checked{% endif %} />プロジェクト管理者</label>
+///     <label><input class="form-check-input me-2" type="checkbox" name="reviewer" value="true" {% if user.is_reviewer() %}checked{% endif %} />レビュワー</label>
+///     <label><input class="form-check-input me-2" type="checkbox" name="participant" value="true" {% if user.is_participant() %}checked{% endif %} />寄稿者</label>
+///     <input class="btn btn-outline-primary btn-sm" type="submit" value="更新" />
+///     </div>
 /// </form>
-/// {% else %}<p>参加者はまだいません。</p>{% endfor %}
-/// <h3>ユーザー追加</h3>
+/// {% else %}<p class="text-body-secondary">参加者はまだいません。</p>{% endfor %}
+/// <h3 class="h6 mb-3">ユーザー追加</h3>
 /// <form action="/{{ project_name }}/admin/add_user" method="post">
-///     <label>Discord ユーザー名 <input type="text" name="username" required maxlength="32" /></label>
-///     <label><input type="checkbox" name="admin" value="true" />プロジェクト管理者</label>
-///     <label><input type="checkbox" name="reviewer" value="true" />レビュワー</label>
-///     <label><input type="checkbox" name="participant" value="true" checked />寄稿者</label>
-///     <input type="submit" value="追加" />
+///     <label class="form-label w-100 mb-3">Discord ユーザー名 <input class="form-control mt-2" type="text" name="username" required maxlength="32" /></label>
+///     <div class="d-flex flex-wrap align-items-center gap-3">
+///     <label><input class="form-check-input me-2" type="checkbox" name="admin" value="true" />プロジェクト管理者</label>
+///     <label><input class="form-check-input me-2" type="checkbox" name="reviewer" value="true" />レビュワー</label>
+///     <label><input class="form-check-input me-2" type="checkbox" name="participant" value="true" checked />寄稿者</label>
+///     <input class="btn btn-primary" type="submit" value="追加" />
+///     </div>
 /// </form>
+/// </div></section>
 /// ```
 #[derive(Debug, Template)]
 #[template(ext = "html", in_doc = true)]

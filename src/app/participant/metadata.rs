@@ -32,32 +32,33 @@ enum FieldInput {
 }
 
 /// ```askama
-/// <p><a href="/{{ project }}/participant">原稿提出に戻る</a></p>
-/// <h1>掲載情報の提出</h1>
-/// {% if saved %}<p role="status">保存しました。</p>{% endif %}
-/// {% if !error.is_empty() %}<p role="alert">{{ error }} ファイルを変更する場合は選び直してください。</p>{% endif %}
-/// {% if fields.is_empty() %}<p>提出項目はまだ設定されていません。</p>{% else %}
+/// <p class="mb-4"><a href="/{{ project }}/participant">原稿提出に戻る</a></p>
+/// <h1 class="h2 fw-bold mb-4">掲載情報の提出</h1>
+/// {% if saved %}<p class="alert alert-success" role="status">保存しました。</p>{% endif %}
+/// {% if !error.is_empty() %}<p class="alert alert-danger" role="alert">{{ error }} ファイルを変更する場合は選び直してください。</p>{% endif %}
+/// {% if fields.is_empty() %}<p class="alert alert-light border">提出項目はまだ設定されていません。</p>{% else %}
 /// <form method="post" action="/{{ project }}/participant/metadata" enctype="multipart/form-data">
 /// {% for field in fields %}
-///     <fieldset><legend>{{ field.label }}</legend>
-///     {% if !field.description.is_empty() %}<p>{{ field.description }}</p>{% endif %}
+///     <fieldset class="card mb-3 p-3 p-md-4"><legend class="float-none w-auto fs-6 px-2">{{ field.label }}</legend>
+///     {% if !field.description.is_empty() %}<p class="text-body-secondary" id="description-{{ field.key }}">{{ field.description }}</p>{% endif %}
 ///     {% match field.input %}
 ///     {% when FieldInput::File { filename, accept } %}
 ///         {% if !filename.is_empty() %}
-///             <p><a href="/{{ project }}/participant/metadata/assets/{{ field.key }}">{{ filename }}</a></p>
-///             <label><input type="checkbox" name="remove.{{ field.key }}" value="true">削除する</label>
+///             <p class="text-break"><a href="/{{ project }}/participant/metadata/assets/{{ field.key }}">{{ filename }}</a></p>
+///             <label class="mb-3"><input class="form-check-input me-2" type="checkbox" name="remove.{{ field.key }}" value="true">削除する</label>
 ///         {% endif %}
-///         <label>ファイルを選択 <input type="file" name="file.{{ field.key }}" accept="{{ accept }}"></label>
+///         <label class="form-label">ファイルを選択 <input class="form-control mt-2" type="file" name="file.{{ field.key }}" accept="{{ accept }}" {% if !field.description.is_empty() %}aria-describedby="description-{{ field.key }}"{% endif %}></label>
+///         <p class="form-text mb-0">1ファイル5 MiBまで。</p>
 ///     {% when FieldInput::String { value, multiline, max_length } %}
 ///         {% if multiline %}
-///             <textarea name="string.{{ field.key }}" aria-label="{{ field.label }}" rows="6" cols="60" maxlength="{{ max_length }}">{{ value }}</textarea>
+///             <textarea class="form-control" name="string.{{ field.key }}" aria-label="{{ field.label }}" {% if !field.description.is_empty() %}aria-describedby="description-{{ field.key }}"{% endif %} rows="6" maxlength="{{ max_length }}">{{ value }}</textarea>
 ///         {% else %}
-///             <input type="text" name="string.{{ field.key }}" aria-label="{{ field.label }}" value="{{ value }}" maxlength="{{ max_length }}" size="60">
+///             <input class="form-control" type="text" name="string.{{ field.key }}" aria-label="{{ field.label }}" {% if !field.description.is_empty() %}aria-describedby="description-{{ field.key }}"{% endif %} value="{{ value }}" maxlength="{{ max_length }}">
 ///         {% endif %}
 ///     {% endmatch %}
 ///     </fieldset>
 /// {% endfor %}
-/// <p><button type="submit">保存</button></p>
+/// <p class="mt-4"><button class="btn btn-primary px-4" type="submit">保存</button></p>
 /// </form>{% endif %}
 /// ```
 #[derive(Template)]

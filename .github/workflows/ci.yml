@@ -304,6 +304,11 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.1"
+
       - name: Cache Cargo dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -348,4 +353,8 @@ jobs:
           WORKER_BUILD_REVISION: ${{ steps.worker-build-revision.outputs.sha }}
 
       - name: Build Worker
-        run: worker-build --release
+        run: |
+          npm ci
+          cp node_modules/bootstrap/dist/css/bootstrap.min.css* assets/static/
+          cp node_modules/bootstrap/LICENSE assets/static/bootstrap-LICENSE.txt
+          worker-build --release

@@ -65,6 +65,7 @@ impl OperationLogEntry {
     pub fn datetime(&self) -> String {
         let datetime = self.timestamp.to_offset(UtcOffset::from_hms(9, 0, 0).unwrap());
         let (year, month, day) = datetime.to_calendar_date();
+        let month = month as u8;
         let (hour, minute, second) = datetime.to_hms();
         format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} JST")
     }

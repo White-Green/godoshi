@@ -16,19 +16,27 @@ pub(super) struct LogQuery {
 }
 
 /// ```askama
-/// <p><a href="/{{ project_name }}/admin">管理画面に戻る</a></p>
-/// <h1>操作ログ</h1>
-/// <p>新しい順に50件ずつ表示します。</p>
-/// <p><a href="/{{ project_name }}/admin/logs">最新のログに戻る</a></p>
-/// <ul>
+/// <p class="mb-4"><a href="/{{ project_name }}/admin">管理画面に戻る</a></p>
+/// <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+///     <div><h1 class="h2 fw-bold mb-2">操作ログ</h1><p class="text-body-secondary mb-0">新しい順に50件ずつ表示します。</p></div>
+///     <a class="btn btn-outline-primary" href="/{{ project_name }}/admin/logs">最新のログに戻る</a>
+/// </div>
+/// <div class="card">
+/// <ul class="list-group list-group-flush">
 /// {% for entry in page.entries %}
-///     <li>{{ entry.datetime() }} — {{ entry.event }}</li>
+///     <li class="list-group-item px-4 py-3">
+///         <time class="small text-body-secondary d-block">{{ entry.datetime() }}</time>
+///         <div class="text-break">{{ entry.event }}</div>
+///     </li>
 /// {% else %}
-///     <li>このページに操作ログはありません。</li>
+///     <li class="list-group-item p-4 text-body-secondary">このページに操作ログはありません。</li>
 /// {% endfor %}
 /// </ul>
+/// </div>
 /// {% if let Some(cursor) = page.next_cursor %}
-/// <p><a rel="next" href="/{{ project_name }}/admin/logs?cursor={{ cursor|urlencode_strict }}">次の50件（古いログ）</a></p>
+/// <nav class="d-flex justify-content-end mt-4" aria-label="操作ログのページ送り">
+///     <a class="btn btn-outline-primary" rel="next" href="/{{ project_name }}/admin/logs?cursor={{ cursor|urlencode_strict }}">次の50件（古いログ）</a>
+/// </nav>
 /// {% endif %}
 /// ```
 #[derive(Template)]
