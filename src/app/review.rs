@@ -19,9 +19,10 @@ where
         .route("/review/{run_id}/file/{*key}", axum::routing::get(file::<S>))
 }
 
+pub(super) const TITLE: &str = "完成稿確認";
+
 /// ```askama
-/// {% if show_project_link %}<p class="mb-4"><a href="/{{ project_name }}/">プロジェクトトップに戻る</a></p>{% endif %}
-/// <h1 class="h2 fw-bold mb-4">完成稿確認</h1>
+/// <h1 class="h2 fw-bold mb-4">{{ TITLE }}</h1>
 /// <ul class="list-group">
 /// {% for run in runs %}
 ///     <li class="list-group-item p-3 text-break"><a href="/{{ project_name }}/review/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
@@ -32,13 +33,13 @@ where
 #[template(ext = "html", in_doc = true)]
 struct ReviewIndexTemplate<'a> {
     project_name: &'a str,
-    show_project_link: bool,
     runs: &'a [BuildResult],
 }
 
+const RESULT_TITLE: &str = "ファイル一覧";
+
 /// ```askama
-/// <p class="mb-4"><a href="/{{ project_name }}/review">一覧に戻る</a></p>
-/// <h1 class="h2 fw-bold mb-4">完成稿確認</h1>
+/// <h1 class="h2 fw-bold mb-4">{{ TITLE }}</h1>
 /// <h2 class="h5 mb-3 text-break">{{ run }}</h2>
 /// <ul class="list-group">
 /// {% for file in files %}
@@ -72,10 +73,10 @@ async fn index<S: Config>(State(state): State<S>, Extension(auth_state): Extensi
         .await
         .map_err(bucket_error)?;
     Ok(render(
-        "完成稿確認",
+        &auth_state,
+        &[(super::root::TITLE, ""), (TITLE, "review")],
         ReviewIndexTemplate {
             project_name: auth_state.project.name.as_ref(),
-            show_project_link: auth_state.user.permissions().bits().count_ones() >= 2,
             runs: &runs,
         },
     ))
@@ -98,7 +99,12 @@ async fn review<S: Config>(
         .await
         .map_err(bucket_error)?;
     Ok(render(
-        "完成稿確認",
+        &auth_state,
+        &[
+            (super::root::TITLE, ""),
+            (TITLE, "review"),
+            (RESULT_TITLE, &format!("review/{}", run_id.as_str())),
+        ],
         ReviewTemplate {
             project_name: auth_state.project.name.as_ref(),
             run: run_id.into(),

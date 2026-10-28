@@ -31,9 +31,10 @@ enum FieldInput {
     File { filename: String, accept: String },
 }
 
+pub(super) const TITLE: &str = "掲載情報の提出";
+
 /// ```askama
-/// <p class="mb-4"><a href="/{{ project }}/participant">原稿提出に戻る</a></p>
-/// <h1 class="h2 fw-bold mb-4">掲載情報の提出</h1>
+/// <h1 class="h2 fw-bold mb-4">{{ TITLE }}</h1>
 /// {% if saved %}<p class="alert alert-success" role="status">保存しました。</p>{% endif %}
 /// {% if !error.is_empty() %}<p class="alert alert-danger" role="alert">{{ error }} ファイルを変更する場合は選び直してください。</p>{% endif %}
 /// {% if fields.is_empty() %}<p class="alert alert-light border">提出項目はまだ設定されていません。</p>{% else %}
@@ -92,7 +93,12 @@ fn edit_page(auth: &AuthState, schema: MetadataSchema, metadata: &AuthorMetadata
         })
         .collect();
     render(
-        "掲載情報の提出",
+        auth,
+        &[
+            (crate::app::root::TITLE, ""),
+            (super::TITLE, "participant"),
+            (TITLE, "participant/metadata"),
+        ],
         EditTemplate {
             project: auth.project.name.as_ref(),
             fields,
