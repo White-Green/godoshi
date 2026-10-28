@@ -1,3 +1,4 @@
+use crate::auth::AuthState;
 use crate::core::Config;
 use askama::Template;
 use axum::Router;
@@ -45,8 +46,13 @@ async fn protect<S: Config>(State(state): State<S>, request: Request, next: Next
     response
 }
 
-fn render(title: &str, inner: impl Template) -> Response {
-    Html(template::HtmlTemplate::new(title, inner).render().expect("Page template must render")).into_response()
+fn render(auth: &AuthState, pages: &[(&str, &str)], inner: impl Template) -> Response {
+    Html(
+        template::HtmlTemplate::new(auth, pages, inner)
+            .render()
+            .expect("Page template must render"),
+    )
+    .into_response()
 }
 
 fn storage_error(error: impl Display) -> (StatusCode, &'static str) {

@@ -49,13 +49,14 @@ where
         .route("/participant/{run_id}/file/{*key}", axum::routing::get(file::<S>))
 }
 
+pub(super) const TITLE: &str = "原稿提出";
+
 /// ```askama
-/// {% if show_project_link %}<p class="mb-4"><a href="/{{ project_name }}/">プロジェクトトップに戻る</a></p>{% endif %}
-/// <h1 class="h2 fw-bold mb-4">原稿提出</h1>
+/// <h1 class="h2 fw-bold mb-4">{{ TITLE }}</h1>
 /// {% if uploaded %}<p class="alert alert-success" role="status">アップロードしました。</p>{% endif %}
 /// <section class="card mb-4"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
 ///     <div><h2 class="h5">掲載情報</h2><p class="text-body-secondary mb-0">表記名やタイトルなど、掲載に必要な情報を入力します。</p></div>
-///     <a class="btn btn-outline-primary" href="/{{ project_name }}/participant/metadata">掲載情報の提出</a>
+///     <a class="btn btn-outline-primary" href="/{{ project_name }}/participant/metadata">{{ metadata::TITLE }}</a>
 /// </div></section>
 /// <section class="card mb-4"><div class="card-body">
 /// <h2 class="h5 mb-3">原稿ファイルのアップロード</h2>
@@ -65,7 +66,7 @@ where
 ///     <input class="btn btn-primary" type="submit" value="アップロード" />
 /// </form>
 /// </div></section>
-/// <h2 class="h5 mb-3">完成稿確認</h2>
+/// <h2 class="h5 mb-3">{{ COMPLETED_TITLE }}</h2>
 /// <ul class="list-group">
 /// {% for run in runs %}
 ///     <li class="list-group-item p-3 text-break"><a href="/{{ project_name }}/participant/{{ run.key.as_str()|urlencode_strict }}">{{ run }}</a></li>
@@ -78,14 +79,14 @@ where
 #[template(ext = "html", in_doc = true)]
 struct ParticipantTemplate<'a> {
     project_name: &'a str,
-    show_project_link: bool,
     uploaded: bool,
     runs: Vec<BuildResult>,
 }
 
+const COMPLETED_TITLE: &str = "完成稿確認";
+
 /// ```askama
-/// <p class="mb-4"><a href="/{{ project_name }}/participant">一覧に戻る</a></p>
-/// <h1 class="h2 fw-bold mb-4">完成稿確認</h1>
+/// <h1 class="h2 fw-bold mb-4">{{ COMPLETED_TITLE }}</h1>
 /// <h2 class="h5 mb-3 text-break">{{ run }}</h2>
 /// <ul class="list-group">
 /// {% for file in files %}
@@ -123,10 +124,10 @@ async fn participant<S: Config>(
         .await
         .map_err(bucket_error)?;
     Ok(render(
-        "原稿提出",
+        &auth_state,
+        &[(super::root::TITLE, ""), (TITLE, "participant")],
         ParticipantTemplate {
             project_name: auth_state.project.name.as_ref(),
-            show_project_link: auth_state.user.permissions().bits().count_ones() >= 2,
             uploaded: notices.get("uploaded").and_then(|value| value.as_bool()).unwrap_or_default(),
             runs,
         },
@@ -150,7 +151,12 @@ async fn completed<S: Config>(
         .await
         .map_err(bucket_error)?;
     Ok(render(
-        "完成稿確認",
+        &auth_state,
+        &[
+            (super::root::TITLE, ""),
+            (TITLE, "participant"),
+            (COMPLETED_TITLE, &format!("participant/{}", run_id.as_str())),
+        ],
         CompletedTemplate {
             project_name: auth_state.project.name.as_ref(),
             run: run_id.into(),

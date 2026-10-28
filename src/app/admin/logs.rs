@@ -15,17 +15,18 @@ pub(super) struct LogQuery {
     cursor: Option<String>,
 }
 
+pub(super) const TITLE: &str = "操作ログ";
+
 /// ```askama
-/// <p class="mb-4"><a href="/{{ project_name }}/admin">管理画面に戻る</a></p>
 /// <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
-///     <div><h1 class="h2 fw-bold mb-2">操作ログ</h1><p class="text-body-secondary mb-0">新しい順に50件ずつ表示します。</p></div>
+///     <div><h1 class="h2 fw-bold mb-2">{{ TITLE }}</h1><p class="text-body-secondary mb-0">新しい順に50件ずつ表示します。</p></div>
 ///     <a class="btn btn-outline-primary" href="/{{ project_name }}/admin/logs">最新のログに戻る</a>
 /// </div>
 /// <div class="card">
 /// <ul class="list-group list-group-flush">
 /// {% for entry in page.entries %}
-///     <li class="list-group-item px-4 py-3">
-///         <time class="small text-body-secondary d-block">{{ entry.datetime() }}</time>
+///     <li class="list-group-item px-3 py-1 d-flex flex-column flex-md-row align-items-md-baseline gap-md-3">
+///         <time class="small text-body-secondary flex-shrink-0 text-nowrap">{{ entry.datetime() }}</time>
 ///         <div class="text-break">{{ entry.event }}</div>
 ///     </li>
 /// {% else %}
@@ -61,7 +62,8 @@ pub(super) async fn index<S: Config>(
         .await
         .map_err(bucket_error)?;
     Ok(render(
-        "操作ログ",
+        &auth,
+        &[(crate::app::root::TITLE, ""), (super::TITLE, "admin"), (TITLE, "admin/logs")],
         LogsTemplate {
             project_name: auth.project.name.as_ref(),
             page,

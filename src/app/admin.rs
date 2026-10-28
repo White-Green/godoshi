@@ -38,23 +38,22 @@ where
         .route("/admin/environment_upload/delete", axum::routing::post(delete_environment_upload::<S>))
 }
 
+pub(super) const TITLE: &str = "プロジェクト管理";
+
 /// ```askama
-/// {% if show_project_link %}<p class="mb-4"><a href="/{{ project_name }}/">プロジェクトトップに戻る</a></p>{% endif %}
-/// <h1 class="h2 fw-bold mb-4">プロジェクト管理</h1>
+/// <h1 class="h2 fw-bold mb-4">{{ TITLE }}</h1>
 /// {% if saved %}<p class="alert alert-success" role="status">保存しました。</p>{% endif %}
-/// <section class="card mb-4"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
-///     <div><h2 class="h5">提出項目</h2><p class="text-body-secondary mb-0">表記名やタイトルなど、寄稿者に入力してもらう項目を設定します。</p></div>
-///     <a class="btn btn-outline-primary" href="/{{ project_name }}/admin/metadata-schema">提出項目の設定</a>
-/// </div></section>
-/// <section class="card mb-4" aria-labelledby="recent-logs-heading">
-/// <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
-///     <h2 class="h5 mb-0" id="recent-logs-heading">操作ログ（最新10件）</h2>
+/// <div class="row g-3 mb-4">
+/// <div class="col-lg-8">
+/// <section class="card" aria-labelledby="recent-logs-heading">
+/// <div class="card-header bg-body d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+///     <h2 class="h5 mb-0" id="recent-logs-heading">{{ logs::TITLE }}（最新10件）</h2>
 ///     <a class="btn btn-outline-primary btn-sm" href="/{{ project_name }}/admin/logs">もっと操作ログを確認</a>
 /// </div>
 /// <ul class="list-group list-group-flush">
 /// {% for entry in logs %}
-///     <li class="list-group-item px-4 py-3">
-///         <time class="small text-body-secondary d-block">{{ entry.datetime() }}</time>
+///     <li class="list-group-item px-3 py-1 d-flex flex-column flex-md-row align-items-md-baseline gap-md-3">
+///         <time class="small text-body-secondary flex-shrink-0 text-nowrap">{{ entry.datetime() }}</time>
 ///         <div class="text-break">{{ entry.event }}</div>
 ///     </li>
 /// {% else %}
@@ -62,15 +61,21 @@ where
 /// {% endfor %}
 /// </ul>
 /// </section>
-/// <section class="card mb-4"><div class="card-body">
-/// <h2 class="h5 mb-3">ビルド環境のアップロード</h2>
+/// </div>
+/// <div class="col-lg-4"><div class="vstack gap-3">
+/// <section class="card"><div class="card-body">
+///     <h2 class="h5">提出項目</h2><p class="text-body-secondary">表記名やタイトルなど、寄稿者に入力してもらう項目を設定します。</p>
+///     <a class="btn btn-outline-primary" href="/{{ project_name }}/admin/metadata-schema">{{ metadata::TITLE }}</a>
+/// </div></section>
+/// <section class="card" aria-labelledby="environment-heading"><div class="card-body">
+/// <h2 class="h5 mb-3" id="environment-heading">ビルド環境のアップロード</h2>
 /// {% if let Some(url) = environment_upload_url %}
 /// <label class="form-label w-100">アップロード用URL取得先 <input class="form-control mt-2" type="text" value="{{ url }}" readonly /></label>
 /// <ol class="form-text ps-3">
 ///     <li>このURLへ<code>GET</code>し、アップロード先を取得します。</li>
 ///     <li>返されたJSONの<code>url</code>へ、ビルド環境のファイルを<code>PUT</code>します。</li>
 /// </ol>
-/// <form action="/{{ project_name }}/admin/environment_upload/delete" method="post">
+/// <form action="/{{ project_name }}/admin/environment_upload/delete" method="post" onsubmit="return window.confirm('アップロードURLを削除（無効化）しますか？このURLから新しいアップロード先を取得できなくなります。');">
 ///     <input type="hidden" name="upload_key" value="{{ environment_upload_key.as_deref().unwrap_or_default() }}" />
 ///     <input class="btn btn-outline-danger" type="submit" value="アップロードURLを削除（無効化）" />
 /// </form>
@@ -80,6 +85,8 @@ where
 /// </form>
 /// {% endif %}
 /// </div></section>
+/// </div></div>
+/// </div>
 /// <section class="card mb-4"><div class="card-body">
 /// <h2 class="h5 mb-3">参加者管理</h2>
 /// {% for user in users %}
@@ -110,7 +117,6 @@ where
 #[template(ext = "html", in_doc = true)]
 struct AdminTemplate<'a> {
     project_name: &'a str,
-    show_project_link: bool,
     users: Vec<ProjectMember>,
     logs: Vec<OperationLogEntry>,
     saved: bool,
@@ -185,10 +191,10 @@ async fn admin<S: Config>(
         .as_ref()
         .map(|key| format!("{}/upload/{key}", state.base_url().trim_end_matches('/')));
     Ok(render(
-        "プロジェクト管理",
+        &auth_state,
+        &[(super::root::TITLE, ""), (TITLE, "admin")],
         AdminTemplate {
             project_name: auth_state.project.name.as_ref(),
-            show_project_link: auth_state.user.permissions().bits().count_ones() >= 2,
             users,
             logs,
             saved: notices.get("saved").and_then(|value| value.as_bool()).unwrap_or_default(),

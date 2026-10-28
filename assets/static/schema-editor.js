@@ -35,7 +35,7 @@
         const current = cards();
         current.forEach((card, index) => {
             const label = control(card, "label").value.trim() || "新しい項目";
-            card.querySelector("[data-field-heading]").textContent = `${index + 1}. ${label}`;
+            card.setAttribute("aria-label", `${index + 1}. ${label}`);
             card.querySelector("[data-move-up]").disabled = index === 0;
             card.querySelector("[data-move-down]").disabled = index === current.length - 1;
             for (const [action, text] of [["move-up", "上へ移動"], ["move-down", "下へ移動"], ["remove-field", "削除"]]) {
@@ -68,9 +68,6 @@
     function appendField(field) {
         const card = template.content.firstElementChild.cloneNode(true);
         const id = `schema-field-${++nextId}`;
-        const heading = card.querySelector("[data-field-heading]");
-        heading.id = `${id}-heading`;
-        card.setAttribute("aria-labelledby", heading.id);
         for (const name of ["key", "label", "description", "accept", "max_length"]) {
             control(card, name).value = field[name] ?? "";
         }
