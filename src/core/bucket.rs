@@ -191,11 +191,22 @@ pub trait FileObject<'a>: Send {
     fn extension(&self) -> Option<Extension<'_>>;
 }
 
+/// A resource list and its revision, including when the list is empty.
+pub struct ResourceSnapshot<F> {
+    pub revision: u64,
+    pub files: Vec<F>,
+}
+
 /// ユーザ1人に対応するresource群
 pub trait UserResourceBucket: Send + Sync {
     type FileObject<'a>: FileObject<'a>;
-    fn current_file_list<'a>(&self) -> impl Future<Output = Result<Vec<Self::FileObject<'a>>, BucketError>> + Send;
+    fn current_snapshot<'a>(&self) -> impl Future<Output = Result<ResourceSnapshot<Self::FileObject<'a>>, BucketError>> + Send;
+    fn current_file_list<'a>(&self) -> impl Future<Output = Result<Vec<Self::FileObject<'a>>, BucketError>> + Send {
+        async { Ok(self.current_snapshot().await?.files) }
+    }
     fn update(&self, files: Vec<Self::FileObject<'_>>) -> impl Future<Output = Result<(), BucketError>> + Send;
+    /// Update a snapshot, including empty lists, only if its revision is still current.
+    fn commit(&self, revision: u64, files: Vec<Self::FileObject<'_>>) -> impl Future<Output = Result<(), BucketError>> + Send;
 }
 
 pub fn resource_file_key(index: usize, extension: Option<Extension<'_>>) -> String {

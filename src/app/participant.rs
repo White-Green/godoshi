@@ -1,32 +1,19 @@
-use super::notice::Notices;
-use super::{FilePath, RunPath, bucket_error, render, storage_error};
+use super::{FilePath, RunPath, bucket_error, render};
 use crate::auth::AuthState;
 use crate::core::Config;
 use crate::core::bucket::{
-    Bucket, BucketError, BuildResult, Extension as FileExtension, File, FileObject, ProjectBucket, ResultBucket, UserResourceBucket,
-    UserResultListBucket,
+    Bucket, BuildResult, File, FileObject, MAX_RESOURCE_FILES, ProjectBucket, ResourceSnapshot, ResultBucket, UserResourceBucket,
+    UserResultListBucket, resource_file_key,
 };
-use crate::core::build::BuildRequests;
 use crate::core::http::FileResponse;
-use crate::core::operation_log::{OperationLog, record};
 use askama::Template;
-use axum::extract::multipart::{MultipartError, MultipartRejection};
-use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::Response;
 use axum::{Extension, Router};
-use futures::StreamExt;
-use smol_str::{SmolStr, format_smolstr};
 
+mod manuscript;
 mod metadata;
-
-const INVALID_UPLOAD: (StatusCode, &str) = (StatusCode::BAD_REQUEST, "ファイルを1つ選択してください。");
-const UPLOAD_TOO_LARGE: (StatusCode, &str) = (StatusCode::PAYLOAD_TOO_LARGE, "ファイルは256 MiB以下にしてください。");
-const MAX_UPLOAD_SIZE: usize = 256 * 1024 * 1024;
-
-#[derive(Debug, thiserror::Error)]
-#[error("Manuscripts must not exceed 256 MiB")]
-struct UploadTooLarge;
 
 pub fn route<S>() -> Router<S>
 where
@@ -41,10 +28,12 @@ where
                 .layer(DefaultBodyLimit::max(metadata::MAX_FORM_BYTES)),
         )
         .route("/participant/metadata/assets/{key}", axum::routing::get(metadata::file::<S>))
+        .route("/participant/files", axum::routing::post(manuscript::append::<S>))
         .route(
-            "/participant/upload",
-            axum::routing::post(upload::<S>).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE + 64 * 1024)),
+            "/participant/manuscript",
+            axum::routing::post(manuscript::edit::<S>).layer(DefaultBodyLimit::max(manuscript::MAX_MANIFEST_SIZE)),
         )
+        .route("/participant/source/{index}", axum::routing::get(manuscript::source::<S>))
         .route("/participant/{run_id}", axum::routing::get(completed::<S>))
         .route("/participant/{run_id}/file/{*key}", axum::routing::get(file::<S>))
 }
@@ -53,19 +42,73 @@ pub(super) const TITLE: &str = "原稿提出";
 
 /// ```askama
 /// <h1 class="h2 fw-bold mb-4">{{ TITLE }}</h1>
-/// {% if uploaded %}<p class="alert alert-success" role="status">アップロードしました。</p>{% endif %}
-/// <section class="card mb-4"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
-///     <div><h2 class="h5">掲載情報</h2><p class="text-body-secondary mb-0">表記名やタイトルなど、掲載に必要な情報を入力します。</p></div>
-///     <a class="btn btn-outline-primary" href="/{{ project_name }}/participant/metadata">{{ metadata::TITLE }}</a>
-/// </div></section>
-/// <section class="card mb-4"><div class="card-body">
-/// <h2 class="h5 mb-3">原稿ファイルのアップロード</h2>
-/// <form action="/{{ project_name }}/participant/upload" method="post" enctype="multipart/form-data">
-///     <label class="form-label w-100">原稿ファイル <input class="form-control mt-2" type="file" name="file" required aria-describedby="upload-help" /></label>
-///     <p class="form-text" id="upload-help">1ファイル256 MiBまでアップロードできます。</p>
-///     <input class="btn btn-primary" type="submit" value="アップロード" />
+/// <link rel="stylesheet" href="/static/manuscript-upload.css" />
+/// <section class="card mb-4" aria-labelledby="manuscript-title"><div class="card-body">
+/// <h2 class="h5 mb-3" id="manuscript-title">原稿ファイル</h2>
+/// <form data-manuscript-upload data-revision="{{ revision }}" data-max-files="{{ MAX_RESOURCE_FILES }}" data-files-url="/{{ project_name }}/participant/files" data-commit-url="/{{ project_name }}/participant/manuscript" data-source-url="/{{ project_name }}/participant/source">
+///     <p class="text-body-secondary" id="page-order-help">追加・削除・並び替えは自動で保存されます。ファイルは末尾に追加されます。</p>
+///     <button class="btn btn-outline-primary w-100 p-4 mb-2" type="button" data-add-pages aria-label="原稿ファイルを追加" aria-describedby="upload-help">
+///         <span class="d-block fw-semibold">クリックしてファイルを選択</span>
+///         <span class="d-block small mt-1">または、ここにドラッグ＆ドロップ</span>
+///     </button>
+///     <input type="file" multiple data-add-files hidden aria-label="追加する原稿ファイル" />
+///     <p class="form-text mb-3" id="upload-help" data-add-help>複数のファイルをまとめて追加できます。</p>
+///     <details class="small text-body-secondary mb-4"><summary>ファイル数・アップロード順</summary><p class="mt-2 mb-0">最大100ファイルまで。複数のファイルはファイル名の数字順に1つずつアップロードします。</p></details>
+///     <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2 mb-2">
+///         <p class="fw-semibold mb-0" data-page-summary aria-live="polite"></p>
+///         <p class="small text-body-secondary text-break mb-0" data-edit-status role="status"></p>
+///     </div>
+///     <p class="small text-body-secondary">「前へ」「次へ」でファイルの順番を変更できます。画像のプレビューは押すと拡大できます。</p>
+///     <p class="alert alert-danger d-none" data-upload-error role="alert"></p>
+///     <div class="d-flex flex-wrap gap-2 mb-3 d-none" data-upload-recovery>
+///         <button class="btn btn-outline-primary" type="button" data-retry-uploads>未送信のファイルを再送信</button>
+///         <button class="btn btn-outline-secondary" type="button" data-cancel-uploads>残りの追加を中止</button>
+///     </div>
+///     <a class="btn btn-outline-secondary mb-3 d-none" href="/{{ project_name }}/participant" data-reload-manuscript>最新の状態を読み込む</a>
+///     <ol class="list-unstyled row row-cols-1 row-cols-md-2 row-cols-lg-3 row-cols-xl-4 g-3 mb-3" data-page-list aria-label="提出済みの原稿" aria-describedby="page-order-help">
+///     {% for name in submitted %}
+///         <li class="col text-break" data-existing-page data-index="{{ loop.index0 }}" data-name="{{ name }}" data-url="/{{ project_name }}/participant/source/{{ loop.index0 }}?revision={{ revision }}">{{ name }}</li>
+///     {% endfor %}
+///     </ol>
+///     <template data-page-template>
+///         <li class="col">
+///             <div class="card h-100 p-3"><div class="row g-3 h-100">
+///                 <div class="col-5 col-md-12">
+///                     <div class="ratio manuscript-thumbnail">
+///                         <button class="btn btn-outline-secondary p-1" type="button" data-preview-page><img class="w-100 h-100 object-fit-contain" loading="lazy" decoding="async" alt="" /></button>
+///                         <div class="d-flex flex-column justify-content-center border rounded bg-body-tertiary p-2 small text-body-secondary text-center text-break d-none" data-preview-fallback>
+///                             <p class="mb-2">プレビューなし</p><a target="_blank" rel="noopener">ファイルを開く</a>
+///                         </div>
+///                     </div>
+///                 </div>
+///                 <div class="col-7 col-md-12 d-flex flex-column">
+///                     <div class="text-break mb-3">
+///                         <strong></strong><span class="d-block small text-body-secondary mt-1" data-page-name></span>
+///                         <span class="badge text-bg-light border mt-2 d-none"></span>
+///                     </div>
+///                     <div class="d-flex flex-wrap gap-2 mt-auto">
+///                         <button class="btn btn-sm btn-outline-secondary" type="button" data-action="up">前へ</button>
+///                         <button class="btn btn-sm btn-outline-secondary" type="button" data-action="down">次へ</button>
+///                         <button class="btn btn-sm btn-outline-danger" type="button" data-action="remove">削除</button>
+///                     </div>
+///                 </div>
+///             </div></div>
+///         </li>
+///     </template>
+///     <p class="text-body-secondary mb-0 d-none" data-empty-pages>原稿はまだ提出されていません。</p>
+///     <noscript><p class="alert alert-warning">原稿の追加・編集にはJavaScriptを有効にしてください。</p></noscript>
+///     <dialog class="manuscript-dialog p-3 border-0 rounded-3" data-preview-dialog aria-labelledby="preview-title">
+///         <div class="d-flex justify-content-between align-items-center gap-3 mb-3"><h3 class="h5 mb-0" id="preview-title" data-preview-title></h3><button class="btn btn-outline-secondary btn-sm" type="button" data-close-preview>閉じる</button></div>
+///         <img class="manuscript-full-image d-block w-100 object-fit-contain" data-preview-image alt="" />
+///         <p class="small text-body-secondary text-break mt-3 mb-0" data-preview-name></p>
+///     </dialog>
 /// </form>
 /// </div></section>
+/// <section class="card mb-4"><div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
+///     <div><h2 class="h5">掲載情報</h2><p class="text-body-secondary mb-0">表記名や作品タイトルなどを入力します。</p></div>
+///     <a class="btn btn-outline-secondary" href="/{{ project_name }}/participant/metadata">{{ metadata::TITLE }}</a>
+/// </div></section>
+/// <script src="/static/manuscript-upload.js" defer></script>
 /// <h2 class="h5 mb-3">{{ COMPLETED_TITLE }}</h2>
 /// <ul class="list-group">
 /// {% for run in runs %}
@@ -79,7 +122,8 @@ pub(super) const TITLE: &str = "原稿提出";
 #[template(ext = "html", in_doc = true)]
 struct ParticipantTemplate<'a> {
     project_name: &'a str,
-    uploaded: bool,
+    submitted: Vec<String>,
+    revision: u64,
     runs: Vec<BuildResult>,
 }
 
@@ -108,17 +152,23 @@ struct CompletedTemplate<'a> {
     files: Vec<File>,
 }
 
-async fn participant<S: Config>(
-    State(state): State<S>,
-    Extension(auth_state): Extension<AuthState>,
-    Extension(Notices(notices)): Extension<Notices>,
-) -> Result<Response, (StatusCode, &'static str)> {
+async fn participant<S: Config>(State(state): State<S>, Extension(auth_state): Extension<AuthState>) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
-    let runs = state
-        .bucket()
-        .project(auth_state.project.id)
+    let bucket = state.bucket();
+    let project = bucket.project(auth_state.project.id);
+    let ResourceSnapshot { revision, files } = project
+        .resource_by_user(auth_state.user.username().clone())
+        .current_snapshot()
+        .await
+        .map_err(bucket_error)?;
+    let submitted = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| resource_file_key(index, file.extension()))
+        .collect();
+    let runs = project
         .result_by_user(auth_state.user.username().clone())
         .list()
         .await
@@ -128,7 +178,8 @@ async fn participant<S: Config>(
         &[(super::root::TITLE, ""), (TITLE, "participant")],
         ParticipantTemplate {
             project_name: auth_state.project.name.as_ref(),
-            uploaded: notices.get("uploaded").and_then(|value| value.as_bool()).unwrap_or_default(),
+            submitted,
+            revision,
             runs,
         },
     ))
@@ -194,109 +245,4 @@ async fn file<S: Config>(
         data,
         attachment: query.download,
     })
-}
-
-async fn upload<S: Config>(
-    State(state): State<S>,
-    Extension(auth_state): Extension<AuthState>,
-    multipart: Result<Multipart, MultipartRejection>,
-) -> Result<Response, (StatusCode, &'static str)> {
-    if !auth_state.user.is_participant() {
-        return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
-    }
-    let mut multipart = multipart.map_err(|_| INVALID_UPLOAD)?;
-    let bucket = state.bucket();
-    let project = bucket.project(auth_state.project.id);
-    let resources = project.resource_by_user(auth_state.user.username().clone());
-    let filename = upload_file(&resources, &mut multipart).await?;
-    record(
-        &project,
-        OperationLog::ManuscriptUpdated {
-            user_id: auth_state.user.user_id(),
-            username: auth_state.user.username().clone(),
-            filename,
-        },
-    )
-    .await;
-    state.builds().request(auth_state.project.id).await.map_err(storage_error)?;
-    Ok((
-        Extension(Notices::from([("uploaded", true)])),
-        Redirect::to(&format_smolstr!("/{}/participant", auth_state.project.name)),
-    )
-        .into_response())
-}
-
-fn extract_extension(filename: &str) -> Option<&str> {
-    let filename = filename.rsplit('/').next().unwrap();
-    filename
-        .split_once('.')
-        .filter(|(stem, extension)| !stem.is_empty() && !extension.trim().is_empty())
-        .map(|(_, extension)| extension)
-}
-
-async fn upload_file<B: UserResourceBucket>(resources: &B, multipart: &mut Multipart) -> Result<String, (StatusCode, &'static str)> {
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|error| upload_error(BucketError::Read(std::io::Error::other(error))))?
-    {
-        if field.name() != Some("file") {
-            continue;
-        }
-        let filename = field.file_name().filter(|name| !name.is_empty()).ok_or(INVALID_UPLOAD)?;
-        let extension = extract_extension(filename).map(SmolStr::from);
-        let extension = extension
-            .as_deref()
-            .map(|value| FileExtension::new(value).ok_or(BucketError::InvalidKey))
-            .transpose()
-            .map_err(upload_error)?;
-        let filename = crate::core::bucket::resource_file_key(0, extension);
-        let mut size = 0;
-        let data = field.map(move |chunk| {
-            let chunk = chunk.map_err(std::io::Error::other)?;
-            size += chunk.len();
-            if size > MAX_UPLOAD_SIZE {
-                return Err(std::io::Error::other(UploadTooLarge));
-            }
-            Ok(chunk)
-        });
-        let file = B::FileObject::from_data(data.boxed(), extension);
-        resources.update(vec![file]).await.map_err(upload_error)?;
-        return Ok(filename);
-    }
-    Err(INVALID_UPLOAD)
-}
-
-fn upload_error(error: BucketError) -> (StatusCode, &'static str) {
-    if let BucketError::Read(error) = &error
-        && let Some(source) = error.get_ref()
-    {
-        if source.is::<UploadTooLarge>() {
-            return UPLOAD_TOO_LARGE;
-        }
-        if let Some(error) = source.downcast_ref::<MultipartError>() {
-            return match error.status() {
-                StatusCode::PAYLOAD_TOO_LARGE => UPLOAD_TOO_LARGE,
-                status => (status, "アップロードしたファイルを読み込めませんでした。"),
-            };
-        }
-    }
-    bucket_error(error)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_extension() {
-        assert_eq!(extract_extension("main.pdf"), Some("pdf"));
-        assert_eq!(extract_extension("main"), None);
-        assert_eq!(extract_extension("dir/main.pdf"), Some("pdf"));
-        assert_eq!(extract_extension("dir.name/main.pdf"), Some("pdf"));
-        assert_eq!(extract_extension("dir.name/main"), None);
-        assert_eq!(extract_extension("dir/main.tar.gz"), Some("tar.gz"));
-        assert_eq!(extract_extension("dir.name/main.tar.gz"), Some("tar.gz"));
-        assert_eq!(extract_extension("dir1.name/dir2.name/main.pdf"), Some("pdf"));
-    }
 }

@@ -45,6 +45,8 @@ fn preview_type(filename: &str) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
         "txt" | "log" | "csv" | "json" | "md" | "html" | "svg" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }

@@ -1,7 +1,7 @@
 use crate::app;
 use crate::auth::AuthState;
 use crate::core::Config;
-use crate::core::bucket::{Bucket, ProjectBucket, ResultKey};
+use crate::core::bucket::{Bucket, Extension as FileExtension, FileObject, ProjectBucket, ResultKey, UserResourceBucket};
 use crate::core::metadata::{AuthorMetadataBucket, MetadataChange, MetadataFile, MetadataUpdate};
 use crate::core::operation_log::OperationLog;
 use crate::core::project::ProjectStore;
@@ -12,6 +12,7 @@ use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Router};
+use futures::StreamExt;
 use time::{Duration, OffsetDateTime};
 
 const SEED_TIMESTAMP: i64 = 1_793_044_800;
@@ -117,6 +118,23 @@ async fn seed() -> TestConfig {
         .await
         .unwrap();
     let bucket = state.bucket();
+    let images: [&[u8]; 3] = [
+        include_bytes!("../tests/fixtures/manuscript-page-1.png"),
+        include_bytes!("../tests/fixtures/manuscript-page-2.png"),
+        include_bytes!("../tests/fixtures/manuscript-page-3.png"),
+    ];
+    let project_bucket = bucket.project(project.id);
+    let resources = project_bucket.resource_by_user(username("preview_editor"));
+    let files = images
+        .into_iter()
+        .map(|image| {
+            FileObject::from_data(
+                futures::stream::iter([Ok(bytes::Bytes::from_static(image))]).boxed(),
+                FileExtension::new("png"),
+            )
+        })
+        .collect();
+    resources.update(files).await.unwrap();
     bucket
         .project(project.id)
         .metadata_by_user(UserId::new(1))

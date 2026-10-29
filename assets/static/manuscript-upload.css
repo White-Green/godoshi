@@ -1,0 +1,7 @@
+.manuscript-thumbnail { --bs-aspect-ratio: 141.4%; }
+.manuscript-dialog {
+  width: min(960px, calc(100% - 2rem));
+  max-height: calc(100dvh - 2rem);
+}
+.manuscript-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.manuscript-full-image { max-height: 75dvh; }
