@@ -251,10 +251,15 @@ pub(super) async fn save<S: Config>(
         .into_response())
 }
 
+#[derive(serde::Deserialize)]
+pub(super) struct AssetPath {
+    key: String,
+}
+
 pub(super) async fn file<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
-    Path(key): Path<String>,
+    Path(AssetPath { key }): Path<AssetPath>,
 ) -> Result<FileResponse, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));

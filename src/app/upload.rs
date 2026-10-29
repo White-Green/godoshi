@@ -21,7 +21,15 @@ where
         }))
 }
 
-async fn presign<S: Config>(State(state): State<S>, Path(key): Path<String>) -> Result<Json<EnvironmentUpload>, (StatusCode, &'static str)> {
+#[derive(serde::Deserialize)]
+struct UploadPath {
+    key: String,
+}
+
+async fn presign<S: Config>(
+    State(state): State<S>,
+    Path(UploadPath { key }): Path<UploadPath>,
+) -> Result<Json<EnvironmentUpload>, (StatusCode, &'static str)> {
     let project = state
         .projects()
         .find_environment_upload_project(&key)
