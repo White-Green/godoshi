@@ -372,12 +372,12 @@ impl UserResources {
 }
 impl UserResourceBucket for UserResources {
     type FileObject<'a> = MemoryFile<'a>;
-    async fn current_file_list<'a>(&self) -> Result<Vec<MemoryFile<'a>>, BucketError> {
+    async fn current_snapshot<'a>(&self) -> Result<ResourceSnapshot<MemoryFile<'a>>, BucketError> {
         let (user_id, revision, files) = self.snapshot().await?;
         if files.len() > MAX_RESOURCE_FILES {
             return Err(BucketError::TooManyFiles);
         }
-        Ok(files
+        let files = files
             .into_iter()
             .map(|file| MemoryFile {
                 extension: file.extension,
@@ -387,13 +387,28 @@ impl UserResourceBucket for UserResources {
                     revision,
                 },
             })
-            .collect())
+            .collect();
+        Ok(ResourceSnapshot {
+            revision: revision as u64,
+            files,
+        })
     }
     async fn update<'a>(&self, files: Vec<Self::FileObject<'a>>) -> Result<(), BucketError> {
+        self.update_files(files, None).await
+    }
+    async fn commit<'a>(&self, revision: u64, files: Vec<Self::FileObject<'a>>) -> Result<(), BucketError> {
+        self.update_files(files, Some(revision)).await
+    }
+}
+impl UserResources {
+    async fn update_files<'a>(&self, files: Vec<MemoryFile<'a>>, expected_revision: Option<u64>) -> Result<(), BucketError> {
         if files.len() > MAX_RESOURCE_FILES {
             return Err(BucketError::TooManyFiles);
         }
         let (user_id, revision, old) = self.snapshot().await?;
+        if expected_revision.is_some_and(|expected| expected != revision as u64) {
+            return Err(BucketError::Conflict);
+        }
         let identity_scope = self.identity_scope(user_id);
         let mut retained = BTreeSet::new();
         for (index, file) in files.iter().enumerate() {
