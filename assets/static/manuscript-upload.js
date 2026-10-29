@@ -12,7 +12,6 @@
   };
   const input = form.querySelector('[data-add-files]');
   const add = form.querySelector('[data-add-pages]');
-  const addHelp = form.querySelector('[data-add-help]');
   const list = form.querySelector('[data-page-list]');
   const template = form.querySelector('[data-page-template]');
   const summary = form.querySelector('[data-page-summary]');
@@ -52,7 +51,7 @@
     const item = {
       row, thumbnail: find('[data-preview-page]'), image: find('img'),
       fallback: find('[data-preview-fallback]'), open: find('a'),
-      number: find('strong'), name: find('[data-page-name]'), badge: find('.badge'),
+      number: find('strong'), badge: find('.badge'),
       up: find('[data-action="up"]'), down: find('[data-action="down"]'), remove: find('[data-action="remove"]'),
     };
     const {thumbnail, image, fallback} = item;
@@ -62,10 +61,10 @@
     else { thumbnail.classList.add('d-none'); fallback.classList.remove('d-none'); }
     thumbnail.addEventListener('click', () => {
       const index = pages.indexOf(page);
-      dialog.querySelector('[data-preview-title]').textContent = `${index + 1}ファイル目`;
+      dialog.querySelector('[data-preview-title]').textContent = `${index + 1}ページ目`;
       dialog.querySelector('[data-preview-name]').textContent = page.name;
       previewImage.src = page.blobUrl ?? page.url;
-      previewImage.alt = `${index + 1}ファイル目のプレビュー`;
+      previewImage.alt = `${index + 1}ページ目のプレビュー`;
       previewOpener = thumbnail;
       dialog.showModal();
     });
@@ -79,6 +78,7 @@
     item.down.addEventListener('click', () => move(1));
     item.remove.addEventListener('click', () => {
       const index = pages.indexOf(page);
+      if (!window.confirm(`${index + 1}ページ目を削除しますか？`)) return;
       const next = pages.filter(item => item !== page);
       updatePages(next, next[Math.min(index, next.length - 1)]?.id, 'remove');
     });
@@ -99,7 +99,6 @@
     reload.classList.toggle('d-none', !blocked);
     input.disabled = locked;
     add.disabled = locked;
-    addHelp.textContent = additionUnavailable() || '複数のファイルをまとめて追加できます。';
     if (add.disabled) add.classList.remove('active');
     for (const [id, item] of rows) {
       if (!pages.some(page => page.id === id)) { item.row.remove(); rows.delete(id); }
@@ -107,9 +106,8 @@
     pages.forEach((page, index) => {
       if (!rows.has(page.id)) rows.set(page.id, createRow(page));
       const item = rows.get(page.id);
-      const label = `${index + 1}ファイル目`;
+      const label = `${index + 1}ページ目`;
       item.number.textContent = label;
-      item.name.textContent = page.name;
       item.badge.classList.toggle('d-none', !page.file);
       item.badge.textContent = page === uploading ? '送信中' : busy ? '待機中' : '未送信';
       // Open files through the server's content-type and sandbox policy, never as local HTML blobs.

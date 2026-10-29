@@ -46,28 +46,24 @@ pub(super) const TITLE: &str = "原稿提出";
 /// <section class="card mb-4" aria-labelledby="manuscript-title"><div class="card-body">
 /// <h2 class="h5 mb-3" id="manuscript-title">原稿ファイル</h2>
 /// <form data-manuscript-upload data-revision="{{ revision }}" data-max-files="{{ MAX_RESOURCE_FILES }}" data-files-url="/{{ project_name }}/participant/files" data-commit-url="/{{ project_name }}/participant/manuscript" data-source-url="/{{ project_name }}/participant/source">
-///     <p class="text-body-secondary" id="page-order-help">追加・削除・並び替えは自動で保存されます。ファイルは末尾に追加されます。</p>
-///     <button class="btn btn-outline-primary w-100 p-4 mb-2" type="button" data-add-pages aria-label="原稿ファイルを追加" aria-describedby="upload-help">
+///     <button class="btn btn-outline-primary w-100 p-4 mb-2" type="button" data-add-pages aria-label="原稿ファイルを追加">
 ///         <span class="d-block fw-semibold">クリックしてファイルを選択</span>
 ///         <span class="d-block small mt-1">または、ここにドラッグ＆ドロップ</span>
 ///     </button>
 ///     <input type="file" multiple data-add-files hidden aria-label="追加する原稿ファイル" />
-///     <p class="form-text mb-3" id="upload-help" data-add-help>複数のファイルをまとめて追加できます。</p>
-///     <details class="small text-body-secondary mb-4"><summary>ファイル数・アップロード順</summary><p class="mt-2 mb-0">最大100ファイルまで。複数のファイルはファイル名の数字順に1つずつアップロードします。</p></details>
 ///     <div class="d-flex flex-wrap justify-content-between align-items-baseline gap-2 mb-2">
 ///         <p class="fw-semibold mb-0" data-page-summary aria-live="polite"></p>
 ///         <p class="small text-body-secondary text-break mb-0" data-edit-status role="status"></p>
 ///     </div>
-///     <p class="small text-body-secondary">「前へ」「次へ」でファイルの順番を変更できます。画像のプレビューは押すと拡大できます。</p>
 ///     <p class="alert alert-danger d-none" data-upload-error role="alert"></p>
 ///     <div class="d-flex flex-wrap gap-2 mb-3 d-none" data-upload-recovery>
 ///         <button class="btn btn-outline-primary" type="button" data-retry-uploads>未送信のファイルを再送信</button>
 ///         <button class="btn btn-outline-secondary" type="button" data-cancel-uploads>残りの追加を中止</button>
 ///     </div>
 ///     <a class="btn btn-outline-secondary mb-3 d-none" href="/{{ project_name }}/participant" data-reload-manuscript>最新の状態を読み込む</a>
-///     <ol class="list-unstyled row row-cols-1 row-cols-md-2 row-cols-lg-3 row-cols-xl-4 g-3 mb-3" data-page-list aria-label="提出済みの原稿" aria-describedby="page-order-help">
+///     <ol class="list-unstyled row row-cols-1 row-cols-md-2 row-cols-lg-3 row-cols-xl-4 g-3 mb-3" data-page-list aria-label="提出済みの原稿">
 ///     {% for name in submitted %}
-///         <li class="col text-break" data-existing-page data-index="{{ loop.index0 }}" data-name="{{ name }}" data-url="/{{ project_name }}/participant/source/{{ loop.index0 }}?revision={{ revision }}">{{ name }}</li>
+///         <li class="col text-break" data-existing-page data-index="{{ loop.index0 }}" data-name="{{ name }}" data-url="/{{ project_name }}/participant/source/{{ loop.index0 }}?revision={{ revision }}">{{ loop.index }}ページ目</li>
 ///     {% endfor %}
 ///     </ol>
 ///     <template data-page-template>
@@ -83,7 +79,7 @@ pub(super) const TITLE: &str = "原稿提出";
 ///                 </div>
 ///                 <div class="col-7 col-md-12 d-flex flex-column">
 ///                     <div class="text-break mb-3">
-///                         <strong></strong><span class="d-block small text-body-secondary mt-1" data-page-name></span>
+///                         <strong></strong>
 ///                         <span class="badge text-bg-light border mt-2 d-none"></span>
 ///                     </div>
 ///                     <div class="d-flex flex-wrap gap-2 mt-auto">
