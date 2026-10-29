@@ -117,6 +117,11 @@ pub(super) async fn edit<S: Config>(
 }
 
 #[derive(serde::Deserialize)]
+pub(super) struct SourcePath {
+    index: usize,
+}
+
+#[derive(serde::Deserialize)]
 pub(super) struct SourceQuery {
     revision: u64,
 }
@@ -124,7 +129,7 @@ pub(super) struct SourceQuery {
 pub(super) async fn source<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
-    Path(index): Path<usize>,
+    Path(SourcePath { index }): Path<SourcePath>,
     Query(query): Query<SourceQuery>,
 ) -> Result<FileResponse, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
