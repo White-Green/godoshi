@@ -9,6 +9,6 @@
   "devDependencies": {
     "bootstrap": "5.3.8",
     "miniflare": "5.20260926.1-alpha",
-    "wrangler": "4.152.0"
+    "wrangler": "4.153.0"
   }
 }
