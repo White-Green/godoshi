@@ -29,7 +29,8 @@ async fn metadata_is_scoped_and_published_without_manuscripts(env: Env) {
     let bucket = bucket(&env).await;
     let project = bucket.project(ProjectId::new(1));
     let metadata = project.metadata_by_user(UserId::new(1));
-    assert!(project.resource().download("authors/author/metadata.json").await.unwrap().is_none());
+    let empty_document = text(project.resource().download("authors/author/metadata.json").await.unwrap().unwrap()).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&empty_document).unwrap(), serde_json::json!({}));
     let update = MetadataUpdate(std::collections::BTreeMap::from([
         ("name".into(), MetadataChange::String("白緑".into())),
         (
