@@ -76,7 +76,7 @@ jobs:
           components: rustfmt
 
       - name: Fetch Cargo dependencies
-        run: cargo fetch
+        run: cargo fetch --locked
 
       - name: Check Rust formatting
         run: cargo fmt --check
@@ -154,7 +154,7 @@ jobs:
           restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
 
       - name: Fetch Cargo dependencies
-        run: cargo fetch
+        run: cargo fetch --locked
 
       - name: Cache Rust target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -164,7 +164,7 @@ jobs:
           restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-{1}-target-{2}-', runner.os, github.job, steps.rust-toolchain.outputs.cachekey) || '' }}
 
       - name: Lint Rust
-        run: cargo clippy --all-targets --tests -- -D warnings
+        run: cargo clippy --locked --all-targets --tests -- -D warnings
 
   rust-test:
     name: Rust Test
@@ -196,7 +196,7 @@ jobs:
           restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
 
       - name: Fetch Cargo dependencies
-        run: cargo fetch
+        run: cargo fetch --locked
 
       - name: Cache Rust target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -206,7 +206,7 @@ jobs:
           restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-{1}-target-{2}-', runner.os, github.job, steps.rust-toolchain.outputs.cachekey) || '' }}
 
       - name: Test Rust
-        run: cargo test
+        run: cargo test --locked
         env:
           PROPTEST_CASES: 4096
 
@@ -320,7 +320,7 @@ jobs:
           restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-cargo-', runner.os) || '' }}
 
       - name: Fetch Cargo dependencies
-        run: cargo fetch
+        run: cargo fetch --locked
 
       - name: Cache Rust target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -330,7 +330,7 @@ jobs:
           restore-keys: ${{ github.ref_name != github.event.repository.default_branch && format('{0}-production-target-{1}-', runner.os, steps.rust-toolchain.outputs.cachekey) || '' }}
 
       - name: Build Rust for Workers target
-        run: cargo build --target wasm32-unknown-unknown
+        run: cargo build --locked --target wasm32-unknown-unknown
 
       - name: Resolve worker-build revision
         id: worker-build-revision
@@ -357,4 +357,4 @@ jobs:
           npm ci
           cp node_modules/bootstrap/dist/css/bootstrap.min.css* assets/static/
           cp node_modules/bootstrap/LICENSE assets/static/bootstrap-LICENSE.txt
-          worker-build --release
+          worker-build --locked --release

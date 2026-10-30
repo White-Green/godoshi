@@ -6,7 +6,7 @@ export async function buildTestWorker() {
   const root = fileURLToPath(new URL("../", import.meta.url));
   const build = spawnSync(
     "worker-build",
-    ["--dev", "--panic-unwind", "--out-dir", "build-tests", "--features", "worker-tests"],
+    ["--locked", "--dev", "--panic-unwind", "--out-dir", "build-tests", "--features", "worker-tests"],
     { cwd: root, stdio: "inherit" },
   );
   if (build.error) throw build.error;
