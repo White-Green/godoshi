@@ -61,6 +61,7 @@ impl ProjectStore for D1Store {
             .map_err(error)
     }
     #[worker::send]
+    #[tracing::instrument(skip_all, err)]
     async fn environment_upload_key(&self, project: ProjectId) -> Result<Option<String>, Self::Error> {
         worker::query!(&self.0, "select upload_key from environment_upload where project_id = ?", project)
             .expect("Environment upload query parameters must be valid D1 values")
@@ -129,6 +130,7 @@ impl ProjectUserStore for D1ProjectUsers<'_> {
         .map_err(error)
     }
     #[worker::send]
+    #[tracing::instrument(skip_all, err)]
     async fn all_member(&self) -> Result<Vec<ProjectMember>, Self::Error> {
         worker::query!(
             self.db,

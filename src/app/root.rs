@@ -34,6 +34,7 @@ struct IndexTemplate<'a> {
 
 pub async fn index(Extension(auth_state): Extension<AuthState>) -> http::Response<Body> {
     if auth_state.user.permissions().is_empty() {
+        tracing::warn!(reason = "no_project_permission", "Authorization rejected request");
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if auth_state.user.permissions().bits().count_ones() == 1 {

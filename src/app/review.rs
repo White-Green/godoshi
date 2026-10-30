@@ -61,8 +61,10 @@ struct ReviewTemplate<'a> {
     files: Vec<File>,
 }
 
+#[tracing::instrument(skip_all)]
 async fn index<S: Config>(State(state): State<S>, Extension(auth_state): Extension<AuthState>) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_reviewer() {
+        tracing::warn!(permission = "reviewer", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "レビュワー権限が必要です。"));
     }
     let runs = state
@@ -82,12 +84,14 @@ async fn index<S: Config>(State(state): State<S>, Extension(auth_state): Extensi
     ))
 }
 
+#[tracing::instrument(skip_all)]
 async fn review<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Path(RunPath { run_id }): Path<RunPath>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_reviewer() {
+        tracing::warn!(permission = "reviewer", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "レビュワー権限が必要です。"));
     }
     let files = state
@@ -119,6 +123,7 @@ struct DownloadQuery {
     download: bool,
 }
 
+#[tracing::instrument(skip_all)]
 async fn file<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
@@ -126,6 +131,7 @@ async fn file<S: Config>(
     Query(query): Query<DownloadQuery>,
 ) -> Result<FileResponse, (StatusCode, &'static str)> {
     if !auth_state.user.is_reviewer() {
+        tracing::warn!(permission = "reviewer", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "レビュワー権限が必要です。"));
     }
     let data = state

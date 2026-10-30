@@ -38,6 +38,7 @@ async fn protect<S: Config>(State(state): State<S>, request: Request, next: Next
         let origin = origin.and_then(|value| value.to_str().ok()).and_then(|value| Url::parse(value).ok());
         let expected = Url::parse(&state.base_url()).expect("BASE_URL must be a valid URL");
         if origin.is_none_or(|origin| origin.origin() != expected.origin()) {
+            tracing::warn!(reason = "invalid_origin", "CSRF protection rejected request");
             return (StatusCode::FORBIDDEN, "ページを開き直して操作してください。").into_response();
         }
     }

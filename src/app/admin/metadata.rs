@@ -101,12 +101,14 @@ fn schema_page(auth: &AuthState, definition: &str, error: &str, saved: bool) -> 
     )
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn schema<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "管理者権限が必要です。"));
     }
     let schema = state.projects().metadata_schema(auth.project.id).await.map_err(storage_error)?;
@@ -124,12 +126,14 @@ pub(super) struct SchemaForm {
     definition: String,
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn save_schema<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     Form(form): Form<SchemaForm>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "管理者権限が必要です。"));
     }
     let parsed = if form.definition.len() > MAX_TEXT_BYTES {

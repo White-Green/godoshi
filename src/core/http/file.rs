@@ -2,6 +2,7 @@ use crate::core::bucket::Data;
 use axum::body::Body;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
+use futures::TryStreamExt;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
 pub struct FileResponse {
@@ -12,7 +13,12 @@ pub struct FileResponse {
 
 impl IntoResponse for FileResponse {
     fn into_response(self) -> Response {
-        let mut response = Response::new(Body::from_stream(self.data.stream));
+        let span = tracing::Span::current();
+        let stream = self
+            .data
+            .stream
+            .inspect_err(move |error| tracing::error!(parent: &span, %error, "File response stream failed"));
+        let mut response = Response::new(Body::from_stream(stream));
         let filename = self.key.rsplit('/').next().unwrap();
         let disposition = if self.attachment { "attachment" } else { "inline" };
         response.headers_mut().insert(

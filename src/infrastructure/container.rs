@@ -28,6 +28,7 @@ impl DurableObject for MyContainer {
         }
     }
 
+    #[tracing::instrument(name = "build_container_request", skip_all, fields(project_id, revision), err)]
     async fn fetch(&self, mut req: Request) -> worker::Result<Response> {
         if req.path() != "/run" {
             return Response::error("Not found", 404);
@@ -39,6 +40,8 @@ impl DurableObject for MyContainer {
             Ok(job) => job,
             Err(_) => return Response::error("A numeric project_id and revision are required", 400),
         };
+        tracing::Span::current().record("project_id", tracing::field::display(job.project_id));
+        tracing::Span::current().record("revision", job.revision);
         self.coordinator.run(self, &job).await?;
         Response::empty()
     }
@@ -89,6 +92,7 @@ impl BuildTarget for MyContainer {
             return Ok(());
         }
         if let Err(error) = container.start(None) {
+            tracing::error!(project_id = %job.project_id, revision = job.revision, run_id = params.run_id, %error, "Build container start failed");
             record(&project, OperationLog::BuildFailed { run_id, exit_code: None }).await;
             release(&db, job).await?;
             return Err(error);

@@ -78,13 +78,17 @@ where
         .find_member(user_id)
         .await
         .map_err(|error| {
-            tracing::error!(%error, "Project member lookup failed");
+            tracing::error!(%error, project_id = %project.id, %user_id, "Project member lookup failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
-        .ok_or(StatusCode::FORBIDDEN)?;
+        .ok_or_else(|| {
+            tracing::warn!(project_id = %project.id, %user_id, reason = "not_project_member", "Authentication rejected");
+            StatusCode::FORBIDDEN
+        })?;
     Ok(AuthState { project, user })
 }
 
+#[tracing::instrument(name = "authenticated_request", skip_all, fields(project_id = %project.id, user_id))]
 pub async fn middleware<S>(
     State(state): State<S>,
     OriginalUri(uri): OriginalUri,
@@ -97,6 +101,7 @@ where
     S: EncryptedCookieKeyProvider + discord::AuthSettingProvider + Config + HttpClient,
 {
     if let Some(user_id) = get_authenticated_user_id(&cookie_jar, &project) {
+        tracing::Span::current().record("user_id", tracing::field::display(user_id));
         tracing::debug!(?project, "Authenticated using session cookie");
         let auth_state = match construct_auth_state(&state, user_id, project).await {
             Ok(auth_state) => auth_state,
@@ -108,6 +113,7 @@ where
 
         cookie_jar = match result {
             Ok((user_id, expires_in)) => {
+                tracing::Span::current().record("user_id", tracing::field::display(user_id));
                 let auth_state = match construct_auth_state(&state, user_id, project.clone()).await {
                     Ok(auth_state) => auth_state,
                     Err(status) => return (new_cookie_jar, status).into_response(),
