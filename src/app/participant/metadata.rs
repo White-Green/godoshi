@@ -14,6 +14,7 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use bytes::Bytes;
+use futures::TryFutureExt;
 use std::collections::BTreeSet;
 
 // Multipart envelope limit is independent of the per-value storage limits.
@@ -116,14 +117,14 @@ pub(super) async fn edit<S: Config>(
     if !auth.user.is_participant() {
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
-    let schema = state.projects().metadata_schema(auth.project.id).await.map_err(storage_error)?;
-    let metadata = state
-        .bucket()
-        .project(auth.project.id)
-        .metadata_by_user(auth.user.user_id())
-        .load()
-        .await
-        .map_err(bucket_error)?;
+    let projects = state.projects();
+    let bucket = state.bucket();
+    let project_bucket = bucket.project(auth.project.id);
+    let metadata = project_bucket.metadata_by_user(auth.user.user_id());
+    let (schema, metadata) = futures::try_join!(
+        projects.metadata_schema(auth.project.id).map_err(storage_error),
+        metadata.load().map_err(bucket_error)
+    )?;
     Ok(edit_page(
         &auth,
         schema,
@@ -225,16 +226,19 @@ pub(super) async fn save<S: Config>(
     let mut multipart = multipart.map_err(|_| (StatusCode::BAD_REQUEST, "フォームの送信形式が不正です。"))?;
     let mut update = MetadataUpdate::default();
     let bucket = state.bucket();
+    let projects_state = state.projects();
     let project = bucket.project(auth.project.id);
     let store = project.metadata_by_user(auth.user.user_id());
     if let Err(error) = parse_form(&mut multipart, &mut update).await {
-        let mut metadata = store.load().await.map_err(bucket_error)?;
+        let (schema, mut metadata) = futures::try_join!(
+            projects_state.metadata_schema(auth.project.id).map_err(storage_error),
+            store.load().map_err(bucket_error),
+        )?;
         for (key, change) in update.0 {
             if let MetadataChange::String(value) = change {
                 metadata.values.insert(key, value);
             }
         }
-        let schema = state.projects().metadata_schema(auth.project.id).await.map_err(storage_error)?;
         return Ok((
             StatusCode::UNPROCESSABLE_ENTITY,
             edit_page(&auth, schema, &metadata, false, &error.to_string()),

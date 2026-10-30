@@ -174,19 +174,17 @@ async fn admin<S: Config>(
     if !auth_state.user.is_admin() {
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
-    let logs = state
-        .bucket()
-        .project(auth_state.project.id)
-        .logs(10, None)
-        .await
-        .map_err(bucket_error)?
-        .entries;
-    let users = state.users().project(auth_state.project.id).all_member().await.map_err(storage_error)?;
-    let environment_upload_key = state
-        .projects()
-        .environment_upload_key(auth_state.project.id)
-        .await
-        .map_err(storage_error)?;
+    let logs_future = async { state.bucket().project(auth_state.project.id).logs(10, None).await.map_err(bucket_error) };
+    let users_future = async { state.users().project(auth_state.project.id).all_member().await.map_err(storage_error) };
+    let env_key_future = async {
+        state
+            .projects()
+            .environment_upload_key(auth_state.project.id)
+            .await
+            .map_err(storage_error)
+    };
+    let (logs, users, environment_upload_key) = futures::try_join!(logs_future, users_future, env_key_future)?;
+    let logs = logs.entries;
     let environment_upload_url = environment_upload_key
         .as_ref()
         .map(|key| format!("{}/upload/{key}", state.base_url().trim_end_matches('/')));

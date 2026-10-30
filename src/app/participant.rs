@@ -11,6 +11,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::{Extension, Router};
+use futures::TryFutureExt;
 
 mod manuscript;
 mod metadata;
@@ -154,21 +155,15 @@ async fn participant<S: Config>(State(state): State<S>, Extension(auth_state): E
     }
     let bucket = state.bucket();
     let project = bucket.project(auth_state.project.id);
-    let ResourceSnapshot { revision, files } = project
-        .resource_by_user(auth_state.user.username().clone())
-        .current_snapshot()
-        .await
-        .map_err(bucket_error)?;
+    let resource = project.resource_by_user(auth_state.user.username().clone());
+    let result = project.result_by_user(auth_state.user.username().clone());
+    let (ResourceSnapshot { revision, files }, runs) =
+        futures::try_join!(resource.current_snapshot().map_err(bucket_error), result.list().map_err(bucket_error))?;
     let submitted = files
         .iter()
         .enumerate()
         .map(|(index, file)| resource_file_key(index, file.extension()))
         .collect();
-    let runs = project
-        .result_by_user(auth_state.user.username().clone())
-        .list()
-        .await
-        .map_err(bucket_error)?;
     Ok(render(
         &auth_state,
         &[(super::root::TITLE, ""), (TITLE, "participant")],
