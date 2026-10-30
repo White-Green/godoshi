@@ -43,6 +43,7 @@ pub(super) struct UploadQuery {
     revision: u64,
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn append<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
@@ -50,6 +51,7 @@ pub(super) async fn append<S: Config>(
     body: Body,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
+        tracing::warn!(permission = "participant", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
     let extension = extension(&query.filename).map_err(bucket_error)?;
@@ -82,12 +84,14 @@ pub(super) struct Manifest {
     pages: Vec<usize>,
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn edit<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     Json(manifest): Json<Manifest>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
+        tracing::warn!(permission = "participant", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
     if manifest.pages.len() > MAX_RESOURCE_FILES {
@@ -126,6 +130,7 @@ pub(super) struct SourceQuery {
     revision: u64,
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn source<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
@@ -133,6 +138,7 @@ pub(super) async fn source<S: Config>(
     Query(query): Query<SourceQuery>,
 ) -> Result<FileResponse, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
+        tracing::warn!(permission = "participant", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
     let bucket = state.bucket();
@@ -161,6 +167,7 @@ pub(super) async fn source<S: Config>(
     })
 }
 
+#[tracing::instrument(skip_all)]
 async fn saved<S: Config>(state: &S, auth: &AuthState, filenames: Vec<String>, revision: u64) -> Response {
     record(
         &state.bucket().project(auth.project.id),

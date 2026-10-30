@@ -82,7 +82,10 @@ impl EnvironmentUploaded {
     pub async fn request_build<B: BuildRequests>(&self, account: &str, bucket: &str, builds: &B, logs: &impl LogBucket) -> Result<(), B::Error> {
         if let Some(project) = self.project(account, bucket) {
             record(&logs.project(project), OperationLog::EnvironmentUpdated).await;
-            builds.request(project).await?;
+            builds
+                .request(project)
+                .await
+                .inspect_err(|error| tracing::error!(project_id = %project, %error, "Environment build request failed"))?;
         }
         Ok(())
     }

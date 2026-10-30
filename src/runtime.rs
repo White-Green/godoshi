@@ -123,7 +123,7 @@ impl HttpClient for AppState {
         let response = worker::Fetch::Request(request)
             .send()
             .await
-            .inspect_err(|_| tracing::error!(stage = "send", "External request failed"))
+            .inspect_err(|error| tracing::error!(%error, stage = "send", "External request failed"))
             .map_err(std::io::Error::other)?;
         let response = axum::http::Response::<Body>::from(response);
         let (parts, body) = response.into_parts();
@@ -134,7 +134,7 @@ impl HttpClient for AppState {
                 std::future::ready(Ok(acc))
             })
             .await
-            .inspect_err(|_| tracing::error!(stage = "response_body", "External request failed"))
+            .inspect_err(|error| tracing::error!(%error, stage = "response_body", "External request failed"))
             .map_err(std::io::Error::other)?;
 
         let status = parts.status.as_u16();
@@ -168,7 +168,7 @@ fn router(env: Env) -> Router {
 }
 
 #[event(fetch)]
-#[tracing::instrument(name = "http_request", skip_all, fields(method = %req.method(), path = request_log_path(req.uri().path())), err)]
+#[tracing::instrument(name = "http_request", skip_all, fields(method = %req.method(), path = request_log_path(req.uri().path()), request_id = req.headers().get("cf-ray").and_then(|value| value.to_str().ok())), err)]
 async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum::http::Response<axum::body::Body>> {
     #[cfg(feature = "worker-tests")]
     if req.method() == axum::http::Method::POST && req.uri().path() == "/test" {
@@ -186,9 +186,9 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> worker::Result<axum
     let status = response.status().as_u16();
     let elapsed_ms = (time::OffsetDateTime::now_utc() - started).as_seconds_f64() * 1000.0;
     if response.status().is_server_error() {
-        tracing::error!(status, elapsed_ms, "Request completed");
+        tracing::error!(status, elapsed_ms, "Response prepared");
     } else {
-        tracing::info!(status, elapsed_ms, "Request completed");
+        tracing::info!(status, elapsed_ms, "Response prepared");
     }
     Ok(response)
 }
@@ -199,11 +199,16 @@ fn request_log_path(path: &str) -> &str {
 }
 
 #[event(fetch, entrypoint = "OutboundHandler")]
-#[tracing::instrument(name = "outbound_request", skip_all, fields(method = %req.method(), path = req.path()), err)]
+#[tracing::instrument(name = "outbound_request", skip_all, fields(method = %req.method(), path = req.path(), project_id, run_id), err)]
 async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Result<worker::Response> {
     let is_head = req.method() == Method::Head;
     let result = async {
-        let params = ctx.props::<s3::Params>().map_err(|_| S3Error::new(S3ErrorCode::AccessDenied))?;
+        let params = ctx.props::<s3::Params>().map_err(|_| {
+            tracing::warn!(reason = "invalid_s3_context", "S3 request rejected");
+            S3Error::new(S3ErrorCode::AccessDenied)
+        })?;
+        tracing::Span::current().record("project_id", tracing::field::display(params.project_id));
+        tracing::Span::current().record("run_id", &params.run_id);
         let r2 = env.bucket("BUCKET").map_err(|error| {
             tracing::error!(%error, binding = "BUCKET", "Required binding unavailable");
             S3Error::new(S3ErrorCode::InternalError)
@@ -228,6 +233,12 @@ async fn outbound_handler(req: Request, env: Env, ctx: Context) -> worker::Resul
     let mut response = worker::Response::try_from(response)?.with_encode_body(worker::EncodeBody::Manual);
     if is_head {
         response = response.into_parts().0.empty();
+    }
+    let status = response.status_code();
+    if status >= 500 {
+        tracing::error!(status, "S3 response prepared");
+    } else if matches!(status, 401 | 403) {
+        tracing::warn!(status, reason = "access_denied", "S3 request rejected");
     }
     Ok(response)
 }
@@ -269,7 +280,12 @@ async fn queue(message_batch: MessageBatch<QueueMessage>, env: Env, _ctx: Contex
                 tracing::info!(message_id, "Queue message acknowledged");
             }
             Err(error) => {
-                tracing::error!(message_id, %error, "Queue message processing failed; retrying");
+                match message.body() {
+                    QueueMessage::Build(job) => {
+                        tracing::error!(message_id, project_id = %job.project_id, revision = job.revision, %error, "Build queue message failed; retrying")
+                    }
+                    QueueMessage::Environment(_) => tracing::error!(message_id, %error, "Environment queue message failed; retrying"),
+                }
                 message.retry();
             }
         }

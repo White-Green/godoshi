@@ -19,6 +19,7 @@ pub(super) async fn append(project: &R2Project<'_>, event: &OperationLog) -> Res
     Ok(())
 }
 
+#[tracing::instrument(name = "list_operation_logs", skip_all, err)]
 pub(super) async fn list(project: &R2Project<'_>, limit: u32, cursor: Option<&str>) -> Result<OperationLogPage, BucketError> {
     let prefix = format!("{}logs/", project.prefix);
     // Fetch only this page, including its bodies. Never follow the cursor here.

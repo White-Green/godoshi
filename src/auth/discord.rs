@@ -175,8 +175,8 @@ where
             return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
         }
         Err(error) => {
-            tracing::warn!(?project, reason = "project_lookup_failed", %error, "Discord callback rejected");
-            return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
+            tracing::error!(?project, reason = "project_lookup_failed", %error, "Discord callback failed");
+            return (cookie_jar, StatusCode::INTERNAL_SERVER_ERROR).into_response();
         }
     };
     tracing::Span::current().record("project", tracing::field::debug(&project));
@@ -186,9 +186,18 @@ where
     }
     let exchange_code = match (exchange_code, authorization_error.as_deref()) {
         (Some(code), None) if !code.secret().is_empty() => code,
-        (None, Some("access_denied")) => return (cookie_jar, StatusCode::FORBIDDEN).into_response(),
-        (None, Some("server_error" | "temporarily_unavailable")) => return (cookie_jar, StatusCode::BAD_GATEWAY).into_response(),
-        _ => return (cookie_jar, StatusCode::BAD_REQUEST).into_response(),
+        (None, Some("access_denied")) => {
+            tracing::warn!(reason = "access_denied", "Discord authorization rejected");
+            return (cookie_jar, StatusCode::FORBIDDEN).into_response();
+        }
+        (None, Some(reason @ ("server_error" | "temporarily_unavailable"))) => {
+            tracing::error!(reason, "Discord authorization failed");
+            return (cookie_jar, StatusCode::BAD_GATEWAY).into_response();
+        }
+        _ => {
+            tracing::warn!(reason = "invalid_authorization_response", "Discord callback rejected");
+            return (cookie_jar, StatusCode::BAD_REQUEST).into_response();
+        }
     };
     let token = match auth_client(&state)
         .exchange_code(exchange_code)
@@ -198,14 +207,18 @@ where
     {
         Ok(response) => response,
         Err(error) => {
-            tracing::warn!(reason = token_error_reason(&error), "Discord authorization code exchange failed");
+            if token_error_status(&error).is_server_error() {
+                tracing::error!(reason = token_error_reason(&error), "Discord authorization code exchange failed");
+            } else {
+                tracing::warn!(reason = token_error_reason(&error), "Discord authorization code exchange failed");
+            }
             return (cookie_jar, token_error_status(&error)).into_response();
         }
     };
 
     let access_token = token.access_token();
     if token.token_type() != &BasicTokenType::Bearer {
-        tracing::warn!(reason = "unsupported_token_type", "Discord token response rejected");
+        tracing::error!(reason = "unsupported_token_type", "Discord token response rejected");
         return (cookie_jar, StatusCode::BAD_GATEWAY).into_response();
     }
 
@@ -291,7 +304,7 @@ impl<E> ConstructAuthStateError<E> {
     }
 }
 
-#[tracing::instrument(name = "discord_profile", skip_all)]
+#[tracing::instrument(name = "discord_profile", skip_all, fields(project_id = %project.id))]
 async fn make_internal_user<S>(state: &S, project: &Project, access_token: &AccessToken) -> Result<UserId, ConstructAuthStateError<S::Error>>
 where
     S: Config + HttpClient,
@@ -305,20 +318,21 @@ where
     let response = state
         .call(request)
         .await
-        .inspect_err(|_| tracing::warn!(reason = "http_error", "Discord profile lookup failed"))
+        .inspect_err(|_| tracing::error!(reason = "http_error", "Discord profile lookup failed"))
         .map_err(ConstructAuthStateError::HttpError)?;
 
     if !response.status().is_success() {
-        tracing::warn!(status = response.status().as_u16(), "Discord profile lookup failed");
+        tracing::error!(status = response.status().as_u16(), "Discord profile lookup failed");
         return Err(ConstructAuthStateError::HttpStatus(response.status()));
     }
 
     let me_response = serde_json::from_slice::<MeResponse>(response.body().as_slice()).inspect_err(|error| {
-        tracing::warn!(
+        tracing::error!(
             status = response.status().as_u16(),
             reason = "invalid_response",
             category = ?error.classify(),
-            "Discord profile lookup failed {error:?}"
+            line = error.line(), column = error.column(),
+            "Discord profile lookup failed"
         );
     })?;
     if me_response.bot {
@@ -329,11 +343,12 @@ where
     let Some(member) = state
         .users()
         .project(project.id)
-        .sync_discord_user(me_response.id, me_response.username)
+        .sync_discord_user(me_response.id, me_response.username.clone())
         .await
-        .inspect_err(|_| tracing::error!("Discord user database lookup failed"))
+        .inspect_err(|error| tracing::error!(%error, "Discord user database lookup failed"))
         .map_err(|e| ConstructAuthStateError::DatabaseError(std::io::Error::other(e)))?
     else {
+        tracing::warn!(discord_username = %me_response.username, project_id = %project.id, reason = "not_project_member", "Discord profile rejected");
         return Err(ConstructAuthStateError::UserNotFound);
     };
 
@@ -418,7 +433,11 @@ where
     {
         Ok(token) => token,
         Err(err) => {
-            tracing::warn!(reason = token_error_reason(&err), "Discord token refresh failed");
+            if token_error_status(&err).is_server_error() {
+                tracing::error!(reason = token_error_reason(&err), "Discord token refresh failed");
+            } else {
+                tracing::warn!(reason = token_error_reason(&err), "Discord token refresh failed");
+            }
             return (cookie_jar, Err(RefreshAuthStateError::TokenExchangeError(err)));
         }
     };
@@ -436,6 +455,7 @@ where
     };
 
     if token.token_type() != &BasicTokenType::Bearer {
+        tracing::error!(reason = "unsupported_token_type", "Discord refresh response rejected");
         return (cookie_jar, Err(RefreshAuthStateError::UnsupportedTokenType));
     }
 

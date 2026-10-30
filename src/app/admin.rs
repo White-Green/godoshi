@@ -166,12 +166,14 @@ struct DeleteEnvironmentUpload {
     upload_key: String,
 }
 
+#[tracing::instrument(skip_all)]
 async fn admin<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
     let logs_future = async { state.bucket().project(auth_state.project.id).logs(10, None).await.map_err(bucket_error) };
@@ -202,11 +204,13 @@ async fn admin<S: Config>(
     ))
 }
 
+#[tracing::instrument(skip_all)]
 async fn create_environment_upload<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
     let mut random = [0; 32];
@@ -228,12 +232,14 @@ async fn create_environment_upload<S: Config>(
         .into_response())
 }
 
+#[tracing::instrument(skip_all)]
 async fn delete_environment_upload<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Form(form): Form<DeleteEnvironmentUpload>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
     state
@@ -248,12 +254,14 @@ async fn delete_environment_upload<S: Config>(
         .into_response())
 }
 
+#[tracing::instrument(skip_all)]
 async fn update_permission<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Form(form): Form<UpdatePermission>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
     let permissions = if form.user_id == auth_state.user.user_id() {
@@ -277,12 +285,14 @@ async fn update_permission<S: Config>(
         .into_response())
 }
 
+#[tracing::instrument(skip_all)]
 async fn add_user<S: Config>(
     State(state): State<S>,
     Extension(auth_state): Extension<AuthState>,
     Form(form): Form<AddUser>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth_state.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
     let username = Username::new(form.username.trim().into()).ok_or((StatusCode::BAD_REQUEST, "Discord ユーザー名を入力してください。"))?;

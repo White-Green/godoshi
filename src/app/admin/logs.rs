@@ -47,12 +47,14 @@ struct LogsTemplate<'a> {
     page: OperationLogPage,
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn index<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     Query(query): Query<LogQuery>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_admin() {
+        tracing::warn!(permission = "admin", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "プロジェクト管理者権限が必要です。"));
     }
     let page = state

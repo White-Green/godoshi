@@ -110,12 +110,14 @@ fn edit_page(auth: &AuthState, schema: MetadataSchema, metadata: &AuthorMetadata
     )
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn edit<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     Extension(Notices(notices)): Extension<Notices>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
+        tracing::warn!(permission = "participant", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
     let projects = state.projects();
@@ -159,6 +161,7 @@ enum MetadataFormError {
     Validation(#[from] MetadataValidationError),
 }
 
+#[tracing::instrument(skip_all)]
 async fn read_field(mut field: Field<'_>, limit: usize) -> Result<Bytes, MetadataFormError> {
     let mut bytes = Vec::new();
     while let Some(chunk) = field.chunk().await? {
@@ -170,6 +173,7 @@ async fn read_field(mut field: Field<'_>, limit: usize) -> Result<Bytes, Metadat
     Ok(bytes.into())
 }
 
+#[tracing::instrument(skip_all)]
 async fn parse_form(multipart: &mut Multipart, update: &mut MetadataUpdate) -> Result<(), MetadataFormError> {
     let mut seen = BTreeSet::new();
     let mut count = 0;
@@ -216,12 +220,14 @@ async fn parse_form(multipart: &mut Multipart, update: &mut MetadataUpdate) -> R
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn save<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     multipart: Result<Multipart, MultipartRejection>,
 ) -> Result<Response, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
+        tracing::warn!(permission = "participant", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
     let mut multipart = multipart.map_err(|_| (StatusCode::BAD_REQUEST, "フォームの送信形式が不正です。"))?;
@@ -269,12 +275,14 @@ pub(super) struct AssetPath {
     key: String,
 }
 
+#[tracing::instrument(skip_all)]
 pub(super) async fn file<S: Config>(
     State(state): State<S>,
     Extension(auth): Extension<AuthState>,
     Path(AssetPath { key }): Path<AssetPath>,
 ) -> Result<FileResponse, (StatusCode, &'static str)> {
     if !auth.user.is_participant() {
+        tracing::warn!(permission = "participant", "Permission denied");
         return Err((StatusCode::FORBIDDEN, "寄稿者権限が必要です。"));
     }
     let (filename, data) = state
