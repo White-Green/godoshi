@@ -155,9 +155,10 @@ impl AuthorMetadataBucket for R2AuthorMetadata<'_> {
 pub(crate) async fn find(db: &D1Database, project: ProjectId, username: &str) -> Result<Option<StoredMetadata>, BucketError> {
     worker::query!(
         db,
-        "SELECT a.values_json, a.assets, a.updated_at FROM author_metadata a
-         JOIN project_member m ON m.project_id = a.project_id AND m.user_id = a.user_id
-         WHERE a.project_id = ? AND m.username = ?",
+        "SELECT COALESCE(a.values_json, '{}') AS values_json, COALESCE(a.assets, '{}') AS assets,
+                COALESCE(a.updated_at, 0) AS updated_at
+         FROM project_member m LEFT JOIN author_metadata a ON a.project_id = m.project_id AND a.user_id = m.user_id
+         WHERE m.project_id = ? AND m.username = ?",
         project,
         username
     )
