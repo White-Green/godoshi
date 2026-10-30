@@ -13,7 +13,7 @@ enabled = true
 enabled = true
 
 [build]
-command = "worker-build --release"
+command = "worker-build --locked --release"
 
 [assets]
 directory = "./assets"
