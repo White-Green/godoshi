@@ -16,6 +16,13 @@ pub enum OperationLog {
         #[serde(rename = "fn")]
         filename: String,
     },
+    #[serde(rename = "amu")]
+    AuthorMetadataUpdated {
+        #[serde(rename = "uid")]
+        user_id: UserId,
+        #[serde(rename = "un")]
+        username: Username,
+    },
     #[serde(rename = "env")]
     EnvironmentUpdated,
     #[serde(rename = "bs")]
@@ -41,6 +48,7 @@ impl fmt::Display for OperationLog {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OperationLog::ManuscriptUpdated { username, filename, .. } => write!(f, "{username}さんが原稿を更新しました({filename})"),
+            OperationLog::AuthorMetadataUpdated { username, .. } => write!(f, "{username}さんが掲載情報を更新しました"),
             OperationLog::EnvironmentUpdated => f.write_str("ビルド環境が更新されました"),
             OperationLog::BuildStarted { .. } => f.write_str("ビルドが開始されました"),
             OperationLog::BuildSucceeded { .. } => f.write_str("ビルドが正常に完了しました"),

@@ -6,6 +6,7 @@ use crate::core::bucket::{Bucket, ProjectBucket};
 use crate::core::build::BuildRequests;
 use crate::core::http::FileResponse;
 use crate::core::metadata::*;
+use crate::core::operation_log::{OperationLog, record};
 use crate::core::project::ProjectStore;
 use askama::Template;
 use axum::Extension;
@@ -247,6 +248,14 @@ pub(super) async fn save<S: Config>(
     }
     // Deliberately do not compare the submitted fields to the current schema.
     store.save(update).await.map_err(bucket_error)?;
+    record(
+        &project,
+        OperationLog::AuthorMetadataUpdated {
+            user_id: auth.user.user_id(),
+            username: auth.user.username().clone(),
+        },
+    )
+    .await;
     state.builds().request(auth.project.id).await.map_err(storage_error)?;
     Ok((
         Extension(Notices::from([("saved", true)])),
