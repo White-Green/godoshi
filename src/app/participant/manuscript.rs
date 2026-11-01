@@ -127,7 +127,7 @@ pub(super) struct SourcePath {
 
 #[derive(serde::Deserialize)]
 pub(super) struct SourceQuery {
-    revision: u64,
+    revision: Option<u64>,
 }
 
 #[tracing::instrument(skip_all)]
@@ -145,7 +145,7 @@ pub(super) async fn source<S: Config>(
     let project = bucket.project(auth.project.id);
     let resources = project.resource_by_user(auth.user.username().clone());
     let snapshot = resources.current_snapshot().await.map_err(bucket_error)?;
-    if query.revision != snapshot.revision {
+    if query.revision.is_some_and(|revision| revision != snapshot.revision) {
         return Err(bucket_error(BucketError::Conflict));
     }
     let file = snapshot.files.get(index).ok_or((StatusCode::NOT_FOUND, "ファイルが見つかりません。"))?;
@@ -156,8 +156,9 @@ pub(super) async fn source<S: Config>(
         .await
         .map_err(bucket_error)?
         .ok_or((StatusCode::NOT_FOUND, "ファイルが見つかりません。"))?;
-    // Numbered paths can change while download resolves the object; do not return a different page.
-    if resources.current_snapshot().await.map_err(bucket_error)?.revision != query.revision {
+    if let Some(revision) = query.revision
+        && resources.current_snapshot().await.map_err(bucket_error)?.revision != revision
+    {
         return Err(bucket_error(BucketError::Conflict));
     }
     Ok(FileResponse {
