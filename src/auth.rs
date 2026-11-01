@@ -7,13 +7,15 @@ use axum::body::Body;
 use axum::extract::{OriginalUri, State};
 use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Redirect};
+use axum::response::IntoResponse;
 use axum::{Extension, Router};
 use axum_extra::extract::cookie::Cookie;
+use oauth2::url::{Url, form_urlencoded};
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
 pub mod discord;
+mod login;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthState {
@@ -125,13 +127,21 @@ where
                 if let Some(status) = error.status_code() {
                     return (new_cookie_jar, status).into_response();
                 }
-                tracing::debug!(?project, "Redirecting unauthenticated request to Discord login");
+                tracing::debug!(?project, "Showing login page for unauthenticated request");
                 let redirect = uri.path_and_query().map_or(uri.path(), |path| path.as_str());
-                let query = oauth2::url::form_urlencoded::Serializer::new(String::new())
+                let query = form_urlencoded::Serializer::new(String::new())
                     .append_pair("project", project.name().as_ref())
                     .append_pair("redirect", redirect)
                     .finish();
-                return (new_cookie_jar, Redirect::to(&format!("/auth/discord?{query}"))).into_response();
+                let login_url = format!("/auth/discord?{query}");
+                let mut page_url = Url::parse(&state.base_url()).expect("BASE_URL must be a valid URL");
+                page_url.set_path(uri.path());
+                page_url.set_query(None);
+                page_url.set_fragment(None);
+                page_url
+                    .query_pairs_mut()
+                    .extend_pairs(form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()).filter(|(name, _)| name == "cursor"));
+                return (new_cookie_jar, login::response(&login_url, page_url.as_str(), request.method())).into_response();
             }
         }
     }
