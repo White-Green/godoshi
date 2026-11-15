@@ -2305,8 +2305,8 @@ dependencies = [
 
 [[package]]
 name = "worker"
-version = "0.8.7"
-source = "git+https://github.com/White-Green/workers-rs?branch=codegen#41293b5acd048f4223dad6a0887501b930092fbb"
+version = "0.9.0"
+source = "git+https://github.com/White-Green/workers-rs?branch=codegen#123b3a7023db1cea8768c93561eb459d6f273bf0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2336,8 +2336,8 @@ dependencies = [
 
 [[package]]
 name = "worker-macros"
-version = "0.8.7"
-source = "git+https://github.com/White-Green/workers-rs?branch=codegen#41293b5acd048f4223dad6a0887501b930092fbb"
+version = "0.9.0"
+source = "git+https://github.com/White-Green/workers-rs?branch=codegen#123b3a7023db1cea8768c93561eb459d6f273bf0"
 dependencies = [
  "async-trait",
  "proc-macro2",
@@ -2351,8 +2351,8 @@ dependencies = [
 
 [[package]]
 name = "worker-sys"
-version = "0.8.7"
-source = "git+https://github.com/White-Green/workers-rs?branch=codegen#41293b5acd048f4223dad6a0887501b930092fbb"
+version = "0.9.0"
+source = "git+https://github.com/White-Green/workers-rs?branch=codegen#123b3a7023db1cea8768c93561eb459d6f273bf0"
 dependencies = [
  "cfg-if",
  "js-sys",
